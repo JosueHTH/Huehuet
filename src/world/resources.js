@@ -37,6 +37,8 @@ export function regenerateResources(grid, ticks) {
 // Returns the amount actually obtained, which is at most what the cell holds.
 export function consume(cell, resourceId, amount) {
   const available = cell.resources[resourceId];
+  // Bad input must not write NaN into the cell: unknown resource or non-finite amount obtains 0.
+  if (!Number.isFinite(available) || !Number.isFinite(amount)) return 0;
   const obtained = Math.min(Math.max(amount, 0), available);
   if (!INEXHAUSTIBLE.has(resourceId)) {
     cell.resources[resourceId] = available - obtained;

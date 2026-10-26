@@ -10,6 +10,18 @@ test('forRadius visita las celdas dentro del radio euclídeo y ninguna más', ()
   assert.ok(vistas.every(([, , d]) => d <= 2));
   assert.ok(vistas.some(([x, y]) => x === 10 && y === 10));
   assert.ok(!vistas.some(([x, y]) => x === 13 && y === 10));
+  const centro = vistas.find(([x, y]) => x === 10 && y === 10);
+  assert.equal(centro[2], 0);
+  assert.ok(!vistas.some(([x, y]) => x === 12 && y === 12)); // Chebyshev lo incluiría
+});
+
+test('forRadius mide distancia euclídea: la diagonal está a raíz de 2', () => {
+  const grid = createGrid(20, 20);
+  const vistas = [];
+  grid.forRadius(10, 10, 1.5, (c, d) => vistas.push([c.x, c.y, d]));
+  const diagonal = vistas.find(([x, y]) => x === 11 && y === 11); // Manhattan la excluiría
+  assert.ok(diagonal, 'la diagonal debe estar dentro del radio 1.5');
+  assert.equal(diagonal[2], Math.SQRT2);
 });
 
 test('forRadius recorta en los bordes sin salirse', () => {
@@ -47,6 +59,25 @@ test('consume sobre un recurso agotado devuelve 0 y no lo vuelve negativo', () =
   const cell = grid.at(1, 1);
   assert.equal(consume(cell, 'leña', 4), 0);
   assert.equal(cell.resources.leña, 0);
+});
+
+test('consume con cantidad no finita obtiene 0 y no toca la celda', () => {
+  const grid = createGrid(3, 3);
+  const cell = grid.at(1, 1);
+  cell.resources.caza = 3;
+  for (const amount of [NaN, Infinity, -Infinity, undefined]) {
+    assert.equal(consume(cell, 'caza', amount), 0);
+    assert.equal(cell.resources.caza, 3);
+  }
+});
+
+test('consume con recurso desconocido obtiene 0 y no crea claves', () => {
+  const grid = createGrid(3, 3);
+  const cell = grid.at(1, 1);
+  const antes = Object.keys(cell.resources).length;
+  assert.equal(consume(cell, 'oro', 2), 0);
+  assert.equal(cell.resources.oro, undefined);
+  assert.equal(Object.keys(cell.resources).length, antes);
 });
 
 test('agua no se agota al consumirla', () => {
