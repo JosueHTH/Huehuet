@@ -30,13 +30,24 @@ export function foundSettlement(band, site, day) {
   const { x, y } = site;
   const buildings = BUILDINGS.map((def, i) => {
     const [dx, dy] = i === 0 ? [0, 0] : ANILLO[(i - 1) % ANILLO.length];
-    return { id: def.id, x: x + dx * RADIO_ANILLO, y: y + dy * RADIO_ANILLO, progress: 0, done: false };
+    // `cost` se publica en el edificio para que la banda sepa qué material le falta sin conocer este catálogo.
+    return { id: def.id, x: x + dx * RADIO_ANILLO, y: y + dy * RADIO_ANILLO, cost: { ...def.cost }, progress: 0, done: false };
   });
   const settlement = { x, y, foundedDay: day, buildings, queue: BUILDINGS.map((b) => b.id) };
   band.settled = true;
   band.site = { x, y };
   band.settlement = settlement;
   return settlement;
+}
+
+// Fracción de la obra que el inventario puede pagar. Un coste de 0 no limita nada y se deja fuera:
+// 0 / 0 es NaN y NaN envenena Math.min, así que la obra se habría detenido en silencio, sin error ni
+// crónica, imposible de ver desde fuera. Sin ningún coste con total > 0, nada limita (Infinity).
+export function avanceFinanciable(cost, inventory) {
+  const limites = Object.entries(cost)
+    .filter(([, total]) => total > 0)
+    .map(([recurso, total]) => (inventory[recurso] ?? 0) / total);
+  return Math.min(Infinity, ...limites);
 }
 
 // Convierte en progreso el trabajo de este tick: cada NPC vivo con action === 'construir' aporta una hora-persona.
@@ -50,8 +61,7 @@ export function tickConstruction(settlement, band, rng) {
   if (manos === 0) return [];
 
   // El avance se limita a lo que el stock puede pagar: con poco material se avanza poco, nunca se atasca.
-  const financiable = Object.entries(def.cost).map(([recurso, total]) => (band.inventory[recurso] ?? 0) / total);
-  const avance = Math.min(manos / def.work, 1 - edificio.progress, ...financiable);
+  const avance = Math.min(manos / def.work, 1 - edificio.progress, avanceFinanciable(def.cost, band.inventory));
   if (!(avance > 0)) return [];
   const gasto = Object.entries(def.cost).map(([recurso, total]) => [recurso, total * avance]);
   if (gasto.some(([recurso, cantidad]) => (band.inventory[recurso] ?? 0) + EPSILON < cantidad)) return [];

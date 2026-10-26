@@ -57,8 +57,10 @@ function sitioRiesgoso() {
   return scoreSite(discovery, C, C, ctx);
 }
 // Un valle mediocre: viable pero lejos de una zona rica.
+// Mediocre de verdad tras la renormalización de Task 11: con el normalizador alcanzable, una zona con
+// recursos en todas las celdas ya puntúa 85, así que la medianía está en cantidades mucho más bajas.
 function descubrimientoMediocre() {
-  const e = escena({ recursos: { caza: 2, forraje: 2, leña: 2, piedra: 2 } });
+  const e = escena({ recursos: { caza: 1, forraje: 1, leña: 1, piedra: 1 } });
   return e.discovery;
 }
 const descubrimientoSinAgua = () => escena({ agua: false, recursos: { caza: 30, forraje: 30 } }).discovery;
@@ -598,7 +600,7 @@ test('al decidir asentarse, la banda fija el sitio y la crónica cuenta la razó
 });
 
 test('la crónica recuerda al disidente por su nombre', () => {
-  const e = escena({ recursos: { caza: 30, forraje: 30, leña: 30, piedra: 30 }, pantano: 9 });
+  const e = escena({ recursos: { caza: 2, forraje: 2, leña: 2, piedra: 2 }, pantano: 9 });
   const band = bandaPolarizada();
   necesidades(band, { hambre: 100, sed: 100, frio: 100, moral: 0 });
   band.recentDeaths = 3;
@@ -610,7 +612,7 @@ test('la crónica recuerda al disidente por su nombre', () => {
 });
 
 test('un rechazo no fija sitio', () => {
-  const e = escena({ recursos: { caza: 2, forraje: 2, leña: 2, piedra: 2 } });
+  const e = escena({ recursos: { caza: 1, forraje: 1, leña: 1, piedra: 1 } });
   const band = bandaComoda();
   const r = considerSettlement(band, e.discovery, e.ctx, INTERVALO_EVALUACION);
   assert.equal(r.decision.settle, false);
@@ -656,7 +658,8 @@ test('una mayoría audaz, sin presión, no acepta un sitio cuyo total no llega a
 
 test('la razón de asentarse depende de la media frente al umbral sin presión, no del total del sitio', () => {
   // sitio rico (total >= 70) visto por una banda muy cauta con presión moderada: la media baja de 70 pero supera el umbral
-  const e = escena({ recursos: { caza: 1e6, forraje: 1e6, leña: 1e6, piedra: 1e6 } });
+  // (con el normalizador alcanzable de Task 11, recursos de sobra dejan la media cauta en 71: hace falta un sitio bueno, no perfecto)
+  const e = escena({ recursos: { caza: 3, forraje: 3, leña: 3, piedra: 3 } });
   const band = bandaCon([{ age: 50, traits: { cautela: 1 } }, { age: 30, traits: { cautela: 1 } }, { age: 25, traits: { cautela: 1 } }]);
   necesidades(band, { hambre: 60, sed: 60, frio: 60, moral: 40 });
   const d = decideSettlement(band, e.discovery, e.ctx);
@@ -727,7 +730,7 @@ test('el mismo rechazo no se repite en la crónica en cada evaluación', () => {
 });
 
 test('si cambia el sitio propuesto, la crónica vuelve a hablar', () => {
-  const e = escena({ recursos: { caza: 8, forraje: 8, leña: 8, piedra: 8 }, rioLargo: true });
+  const e = escena({ recursos: { caza: 1, forraje: 1, leña: 1, piedra: 1 }, rioLargo: true });
   const band = bandaComoda();
   const r1 = considerSettlement(band, e.discovery, e.ctx, INTERVALO_EVALUACION);
   assert.ok(r1.chronicle.length > 0);

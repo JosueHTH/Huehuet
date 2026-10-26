@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { createGrid, BIOMES } from '../../src/world/grid.js';
 import { createDiscovery } from '../../src/world/discovery.js';
 import { generateWorld } from '../../src/world/worldgen.js';
-import { SITE_FACTORS, scoreSite, acceptanceThreshold, candidateSites } from '../../src/tribe/sitescore.js';
+import { SITE_FACTORS, scoreSite, acceptanceThreshold, candidateSites, VALOR_ALCANZABLE, valorQuePuntua } from '../../src/tribe/sitescore.js';
 import { codeOnly } from './purity.js';
 
 const C = 10; // celda central de la rejilla sintética de 25x25
@@ -413,11 +413,13 @@ test('el desglose publicado reproduce cada aportación (peso efectivo, normaliza
   for (const args of casos) {
     const s = scoreSite(...args);
     assert.equal(s.viable, true);
-    const pesoTotal = s.factors.reduce((a, f) => a + Math.max(0, f.effectiveWeight), 0);
-    assert.ok(Math.abs(s.weightTotal - pesoTotal) < 1e-9, 'weightTotal = suma de pesos efectivos positivos');
+    // Task 11: el normalizador es lo máximo REALMENTE alcanzable (peso efectivo × VALOR_ALCANZABLE), no la
+    // suma de pesos a secas: normalizando por esta última ningún sitio de un mundo generado pasaba de 64.
+    const pesoTotal = s.factors.reduce((a, f) => a + Math.max(0, f.effectiveWeight) * (VALOR_ALCANZABLE[f.id] ?? 1), 0);
+    assert.ok(Math.abs(s.weightTotal - pesoTotal) < 1e-9, 'weightTotal = suma de pesos efectivos positivos alcanzables');
     for (const f of s.factors) {
       const escala = f.effectiveWeight < 0 ? s.penaltyScale : 1;
-      const esperado = (f.value * f.effectiveWeight / s.weightTotal) * 100 * escala;
+      const esperado = (valorQuePuntua(f.id, f.value) * f.effectiveWeight / s.weightTotal) * 100 * escala;
       assert.ok(Math.abs(esperado - f.contribution) < 1e-9, `${f.id}: ${esperado} vs ${f.contribution}`);
     }
   }

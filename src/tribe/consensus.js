@@ -3,7 +3,7 @@
 // Pura y determinista: sin rng ni reloj; el mundo se mira solo a través de sitescore (que usa discovery).
 import { livingNpcs, bandPressure, registrarAbandono } from './band.js';
 import { isElder, isAdult } from '../agents/npc.js';
-import { acceptanceThreshold, candidateSites } from './sitescore.js';
+import { acceptanceThreshold, candidateSites, VALOR_ALCANZABLE, valorQuePuntua } from './sitescore.js';
 
 // --- Cifras de balance (inventadas en la Etapa 1, a afinar jugando) -------------------------------
 const PESO_ANCIANO = 2;          // el voto de un anciano pesa el doble
@@ -43,8 +43,9 @@ export function npcSiteScore(npc, site) {
   // Se renormaliza por la suma de pesos positivos YA reponderados: dar más peso a un factor lo vuelve más
   // importante frente a los demás, no más grande en total. Así la visión de cada NPC sigue siendo un 0..100 del
   // mismo sitio y los rasgos no inflan (ni desinflan) la media de la banda. Sin rasgos coincide con site.total.
-  const denominador = pesos.reduce((a, p) => a + Math.max(0, p), 0);
-  const base = site.factors.map((f, i) => (denominador > 0 ? f.value * pesos[i] / denominador * 100 : 0));
+  // Mismo normalizador que sitescore (peso × valor alcanzable), ya reponderado: sin rasgos coincide con site.total.
+  const denominador = pesos.reduce((a, p, i) => a + Math.max(0, p) * (VALOR_ALCANZABLE[site.factors[i].id] ?? 1), 0);
+  const base = site.factors.map((f, i) => (denominador > 0 ? valorQuePuntua(f.id, f.value) * pesos[i] / denominador * 100 : 0));
   const positivo = base.reduce((a, c) => a + Math.max(0, c), 0);
   const negativo = -base.reduce((a, c) => a + Math.min(0, c), 0);
   const escala = negativo > positivo ? positivo / negativo : 1;

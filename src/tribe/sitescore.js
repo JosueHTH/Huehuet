@@ -17,6 +17,23 @@ export const SITE_FACTORS = [
   { id: 'depredadores', label: 'Depredadores', weight: -7, radius: 4 },
 ];
 
+// Máximo realmente alcanzable de cada factor en un mundo generado (Task 11, medido sobre los 50 mejores
+// candidatos de 10 mundos con el mapa entero descubierto). Normalizar por la suma de TODOS los pesos suponía
+// que existen sitios excelentes en los nueve factores a la vez, y no existen: el mejor sitio de un mundo se
+// quedaba en 58-64 y una banda cómoda (umbral 70) no podía asentarse nunca. Hay topes estructurales:
+//   - agua: el valor es 1 − distancia/(radio+1) y el sitio no puede ser el propio río, así que nunca pasa de 0.75;
+//   - defensa: el desnivel medio real da 0.1-0.4, jamás 1;
+//   - refugio: es la media de `shelter` de los biomas del radio, y el mejor bioma vale 0.8.
+// Así el rango 0..100 se usa de verdad y 70 sigue queriendo decir "un sitio genuinamente bueno".
+// El valor publicado de cada factor sigue siendo su 0..1 real (la interfaz explica el sitio sin mentir), pero
+// lo que puntúa es el valor recortado a lo alcanzable: pasado ese punto, más cantidad no hace mejor al sitio
+// (el doble de forraje que una zona ya rica no vale el doble). Así la suma de aportaciones positivas no puede
+// pasar de 100 y las penalizaciones siguen escalándose contra ella.
+export const VALOR_ALCANZABLE = { agua: 0.75, caza: 0.8, forraje: 0.75, leña: 0.8, piedra: 0.85, defensa: 0.35, refugio: 0.7 };
+
+// Lo que de ese valor puntúa. Las penalizaciones (sin tope) puntúan enteras.
+export const valorQuePuntua = (id, value) => Math.min(value, VALOR_ALCANZABLE[id] ?? 1);
+
 // Semisaturación k de v / (v + k): con esa cantidad acumulada en el radio el factor vale 0.5.
 // Aproximadamente la mitad de lo que daría una zona rica (celdas en el radio × máximo del recurso × ~0.3).
 const SEMISATURACION = { caza: 60, forraje: 80, leña: 120, piedra: 150 };
@@ -89,8 +106,8 @@ const modificador = (id, season) => MODIFICADOR_ESTACIONAL[id]?.[season] ?? 1;
 // SiteScore = { x, y, total 0..100, viable, weightTotal, penaltyScale,
 //   factors: [{ id, label, value 0..1, weight (base), effectiveWeight (con estación), contribution }] }.
 // total = suma de aportaciones. El desglose se reproduce con lo publicado:
-//   contribution = value × effectiveWeight / weightTotal × 100 (× penaltyScale si effectiveWeight < 0),
-// con weightTotal = suma de los pesos efectivos positivos (lo máximo posible suma 100). Las penalizaciones nunca superan lo que suman los demás factores (total >= 0).
+//   contribution = valorQuePuntua(id, value) × effectiveWeight / weightTotal × 100 (× penaltyScale si effectiveWeight < 0),
+// con weightTotal = suma de los pesos efectivos positivos por su VALOR_ALCANZABLE (un sitio alcanzable suma 100). Las penalizaciones nunca superan lo que suman los demás factores (total >= 0).
 // Un sitio no descubierto, en un lago o río, o sin agua dulce conocida a 3 celdas no es viable: total 0 y aportaciones 0,
 // pero los valores se calculan igualmente.
 export function scoreSite(discovery, x, y, ctx) {
@@ -104,11 +121,12 @@ export function scoreSite(discovery, x, y, ctx) {
     return Math.min(1, Math.max(0, valor));
   });
   const pesos = SITE_FACTORS.map((f) => f.weight * modificador(f.id, ctx.season));
-  const pesoTotal = pesos.reduce((a, p) => a + Math.max(0, p), 0);
+  // Normalizador: lo máximo que puede sumar un sitio realmente alcanzable, no la suma de pesos a secas.
+  const pesoTotal = pesos.reduce((a, p, i) => a + Math.max(0, p) * (VALOR_ALCANZABLE[SITE_FACTORS[i].id] ?? 1), 0);
   const viable = sitio !== null && !esAgua(sitio) && valores[SITE_FACTORS.findIndex((f) => f.eliminatory)] > 0;
 
   // Aportación = valor × peso efectivo / pesoTotal × 100; las penalizaciones además × escalaPenalizacion.
-  const base = pesos.map((p, i) => (viable ? (valores[i] * p / pesoTotal) * 100 : 0));
+  const base = pesos.map((p, i) => (viable ? (valorQuePuntua(SITE_FACTORS[i].id, valores[i]) * p / pesoTotal) * 100 : 0));
   const positivo = base.reduce((a, c) => a + Math.max(0, c), 0);
   const negativo = -base.reduce((a, c) => a + Math.min(0, c), 0);
   const escalaPenalizacion = negativo > positivo ? positivo / negativo : 1;

@@ -40,6 +40,26 @@ const distanciaALaBanda = (npc, band) => Math.max(Math.abs(band.x - npc.x), Math
 // Task 7 no declara `band.settlement`; quien cree el asentamiento (Tasks 10/11) debe colgarlo ahí.
 const hayObra = (band) => band.settled === true && (band.settlement?.queue?.length ?? 0) > 0;
 
+// El edificio en el que se trabaja ahora, con su coste publicado por el asentamiento (no se importa
+// el catálogo de Task 10: la aldea cuelga de la banda lo que cuesta cada obra).
+function obraActual(band) {
+  if (!hayObra(band)) return null;
+  const id = band.settlement.queue[0];
+  return band.settlement.buildings?.find((b) => b.id === id) ?? null;
+}
+
+// Multiplicador de la recolección cuando la obra en curso pide ese material y no hay suficiente.
+// Sin esto nadie recoge piedra (su puntuación máxima era ~7, por debajo de explorar) y la choza y el
+// almacén no se podían terminar nunca; subir el peso a secas hacía que se dejara de talar y la banda
+// se quedaba sin leña para la hoguera. Así la recolección sigue el plan de obra y se apaga sola al
+// llegar al material necesario, y mientras la banda es nómada nada cambia.
+const EMPUJE_OBRA = 4;
+const faltaParaLaObra = (band, recurso) => {
+  const necesario = obraActual(band)?.cost?.[recurso] ?? 0;
+  return necesario > 0 && (band.inventory[recurso] ?? 0) < necesario;
+};
+const empuje = (band, recurso) => (faltaParaLaObra(band, recurso) ? EMPUJE_OBRA : 1);
+
 // Toma del recurso lo que haya a su alcance; devuelve lo obtenido (0 si no hay nada).
 function tomar(npc, ctx, resourceId, cantidad) {
   const celda = mejorCelda(npc, ctx, resourceId);
@@ -50,6 +70,63 @@ const DIRECCIONES = [[0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0],
 const PASO_EXPLORAR = 3;
 const RADIO_VISTA = 5;
 const HALLAZGO_MINIMO = 10;
+
+// Costura de la Etapa 1 (Task 11): la puntuación de `explorar` ya sube por desesperación cuando una
+// necesidad vital no tiene con qué satisfacerse a su alcance, pero el movimiento era siempre al azar:
+// un NPC sediento que YA ha visto un río se alejaba de él y moría de sed en dos días. Aquí la salida
+// se vuelve coherente con su motivo: si hay desesperación y la banda conoce una celda con ese recurso,
+// se camina hacia ella. Sin recurso conocido (o sin desesperación) sigue siendo exploración al azar.
+export const RADIO_BUSQUEDA_VITAL = 24;   // celdas a la redonda en las que se busca el recurso conocido
+const SED_DESESPERADA = 50;               // a partir de aquí la sed dirige el paso
+const HAMBRE_DESESPERADA = 60;
+
+// La celda conocida más cercana (anillos Chebyshev crecientes) con algo de `resourceId`, o null.
+// Orden de lectura fijo dentro de cada anillo: el resultado es reproducible.
+function celdaConocidaMasCercana(npc, ctx, resourceId, radio) {
+  for (let r = 1; r <= radio; r++) {
+    let mejor = null;
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        const celda = ctx.discovery.knownCell(npc.x + dx, npc.y + dy);
+        if (celda && celda.resources[resourceId] > 0) {
+          const d2 = dx * dx + dy * dy;
+          if (!mejor || d2 < mejor.d2) mejor = { celda, d2 };
+        }
+      }
+    }
+    if (mejor) return mejor.celda;
+  }
+  return null;
+}
+
+// Hacia dónde tira la necesidad: agua si la sed aprieta y no hay agua a su alcance, comida si es el hambre.
+// Devuelve la celda meta conocida o null.
+function metaVital(npc, ctx) {
+  if (npc.needs.sed >= SED_DESESPERADA && !alcanzable(npc, ctx, 'agua')) {
+    const agua = celdaConocidaMasCercana(npc, ctx, 'agua', RADIO_BUSQUEDA_VITAL);
+    if (agua) return agua;
+  }
+  if (npc.needs.hambre >= HAMBRE_DESESPERADA
+    && !alcanzable(npc, ctx, 'forraje') && !alcanzable(npc, ctx, 'caza')) {
+    const forraje = celdaConocidaMasCercana(npc, ctx, 'forraje', RADIO_BUSQUEDA_VITAL);
+    if (forraje) return forraje;
+    const caza = celdaConocidaMasCercana(npc, ctx, 'caza', RADIO_BUSQUEDA_VITAL);
+    if (caza) return caza;
+  }
+  return null;
+}
+
+// Paso de hasta PASO_EXPLORAR celdas hacia la meta, sin pasarse de largo y sin salir de la rejilla.
+function pasoHacia(npc, ctx, meta) {
+  const acercar = (actual, destino) => {
+    const delta = destino - actual;
+    return Math.sign(delta) * Math.min(PASO_EXPLORAR, Math.abs(delta));
+  };
+  const x = npc.x + acercar(npc.x, meta.x);
+  const y = npc.y + acercar(npc.y, meta.y);
+  return ctx.grid.inBounds(x, y) ? { x, y } : null;
+}
 
 export const ACTIONS = [
   {
@@ -89,7 +166,8 @@ export const ACTIONS = [
   {
     id: 'talar',
     label: 'Talar',
-    score: (npc, band, ctx) => PESO.talar * (0.1 + urgencia(npc.needs.frio)) * disponibilidad(npc, ctx, 'leña', 2),
+    score: (npc, band, ctx) => PESO.talar * (0.1 + urgencia(npc.needs.frio)) * disponibilidad(npc, ctx, 'leña', 2)
+      * empuje(band, 'leña'),
     apply(npc, band, ctx) {
       band.inventory.leña = inventario(band, 'leña') + tomar(npc, ctx, 'leña', 2);
       return null;
@@ -98,7 +176,8 @@ export const ACTIONS = [
   {
     id: 'recoger_piedra',
     label: 'Recoger piedra',
-    score: (npc, band, ctx) => PESO.piedra * (0.15 + 0.2 * npc.traits.sabiduria) * disponibilidad(npc, ctx, 'piedra', 2),
+    score: (npc, band, ctx) => PESO.piedra * (0.15 + 0.2 * npc.traits.sabiduria) * disponibilidad(npc, ctx, 'piedra', 2)
+      * empuje(band, 'piedra'),
     apply(npc, band, ctx) {
       band.inventory.piedra = inventario(band, 'piedra') + tomar(npc, ctx, 'piedra', 2);
       return null;
@@ -125,11 +204,18 @@ export const ACTIONS = [
         alcanzable(npc, ctx, 'forraje') || alcanzable(npc, ctx, 'caza') ? 0 : urgencia(npc.needs.hambre),
       ),
     apply(npc, band, ctx, rng) {
-      const posibles = DIRECCIONES.filter(([dx, dy]) =>
-        ctx.grid.inBounds(npc.x + dx * PASO_EXPLORAR, npc.y + dy * PASO_EXPLORAR));
-      const [dx, dy] = rng.pick(posibles);
-      npc.x += dx * PASO_EXPLORAR;
-      npc.y += dy * PASO_EXPLORAR;
+      const meta = metaVital(npc, ctx);
+      const dirigido = meta ? pasoHacia(npc, ctx, meta) : null;
+      if (dirigido) {
+        npc.x = dirigido.x;
+        npc.y = dirigido.y;
+      } else {
+        const posibles = DIRECCIONES.filter(([dx, dy]) =>
+          ctx.grid.inBounds(npc.x + dx * PASO_EXPLORAR, npc.y + dy * PASO_EXPLORAR));
+        const [dx, dy] = rng.pick(posibles);
+        npc.x += dx * PASO_EXPLORAR;
+        npc.y += dy * PASO_EXPLORAR;
+      }
       const nuevas = ctx.discovery.reveal(npc.x, npc.y, RADIO_VISTA);
       return nuevas >= HALLAZGO_MINIMO ? `${npc.nombre} descubrió ${nuevas} lugares nuevos.` : null;
     },
