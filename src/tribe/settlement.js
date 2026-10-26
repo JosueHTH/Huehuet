@@ -18,13 +18,15 @@ const ANILLO = [[1, 0], [-1, 0]];    // direcciones del anillo, en orden de cons
 const EPSILON = 1e-9;
 
 const TEXTOS = {
-  hoguera: 'Prendieron la primera hoguera de la aldea. Esa noche, por primera vez en mucho tiempo, nadie durmió con frío.',
+  hoguera: 'Prendieron la primera hoguera de la aldea. Su luz quedó fija en el centro del campamento y la banda empezó a reunirse a su alrededor.',
   choza: 'Se alzó la primera choza: techo de ramas y barro donde guarecerse de la lluvia y del viento.',
   almacen: 'El almacén quedó listo. Ya hay un lugar donde guardar lo recolectado para los días difíciles.',
 };
 
 // Fija la aldea en el sitio y deja la cola completa. `site` es un SiteScore (solo se usan x e y).
+// Idempotente: si la banda ya tiene aldea la devuelve intacta (una segunda llamada no reinicia nada).
 export function foundSettlement(band, site, day) {
+  if (band.settlement) return band.settlement;
   const { x, y } = site;
   const buildings = BUILDINGS.map((def, i) => {
     const [dx, dy] = i === 0 ? [0, 0] : ANILLO[(i - 1) % ANILLO.length];
@@ -47,7 +49,10 @@ export function tickConstruction(settlement, band, rng) {
   const manos = livingNpcs(band).filter((npc) => npc.action === 'construir').length;
   if (manos === 0) return [];
 
-  const avance = Math.min(manos / def.work, 1 - edificio.progress);
+  // El avance se limita a lo que el stock puede pagar: con poco material se avanza poco, nunca se atasca.
+  const financiable = Object.entries(def.cost).map(([recurso, total]) => (band.inventory[recurso] ?? 0) / total);
+  const avance = Math.min(manos / def.work, 1 - edificio.progress, ...financiable);
+  if (!(avance > 0)) return [];
   const gasto = Object.entries(def.cost).map(([recurso, total]) => [recurso, total * avance]);
   if (gasto.some(([recurso, cantidad]) => (band.inventory[recurso] ?? 0) + EPSILON < cantidad)) return [];
 

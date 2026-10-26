@@ -156,16 +156,43 @@ test('el descuento total de una obra terminada es exactamente su coste', () => {
   assert.ok(Math.abs(band.inventory.piedra - (100 - gastoPiedra)) < 1e-6);
 });
 
-test('con materiales justos la obra se detiene sin dejar el inventario en negativo', () => {
+test('con materiales escasos la obra avanza hasta donde llega el stock, sin negativos', () => {
   const band = bandaComoda(); band.inventory = { leña: 3, piedra: 0 };
   const s = foundSettlement(band, sitioBueno(), 1);
+  tickConstruction(s, band, createRng(1));
+  const hoguera = s.buildings[0];
+  // 7 manos piden 3.5 de leña en un tick; con 3 se financia la parte que alcanza
+  assert.ok(hoguera.progress > 0, 'debe avanzar con stock positivo');
+  assert.ok(Math.abs(hoguera.progress - 3 / 6) < 1e-9);
+  assert.ok(Math.abs(band.inventory.leña) < 1e-9);
   correr(s, band, 1000);
   for (const v of Object.values(band.inventory)) assert.ok(v >= 0);
-  assert.equal(s.buildings.find((b) => b.id === 'hoguera').done, false);
-  // llega más leña: se reanuda
+  assert.ok(Math.abs(hoguera.progress - 0.5) < 1e-9, 'sin más leña no pasa de lo financiado');
+  assert.equal(hoguera.done, false);
+  // llega más leña: se reanuda y termina
   band.inventory.leña = 500;
   correr(s, band, 500);
-  assert.ok(s.buildings.find((b) => b.id === 'hoguera').done);
+  assert.ok(hoguera.done);
+});
+
+test('con 5 de leña la hoguera llega a 5/6 en lugar de quedarse atascada', () => {
+  const band = bandaComoda(); band.inventory = { leña: 5, piedra: 0 };
+  const s = foundSettlement(band, sitioBueno(), 1);
+  correr(s, band, 10);
+  assert.ok(Math.abs(s.buildings[0].progress - 5 / 6) < 1e-9);
+});
+
+test('foundSettlement es idempotente: repetirla conserva la aldea y su progreso', () => {
+  const band = bandaComoda(); band.inventory = { leña: 999, piedra: 999 };
+  const s = foundSettlement(band, sitioBueno(), 3);
+  correr(s, band, 500);
+  const antes = JSON.stringify(s);
+  const otra = foundSettlement(band, { ...sitioBueno(), x: C + 5, y: C + 5 }, 99);
+  assert.equal(otra, s);
+  assert.equal(band.settlement, s);
+  assert.equal(JSON.stringify(band.settlement), antes);
+  assert.equal(s.foundedDay, 3);
+  assert.ok(s.buildings[0].done);
 });
 
 test('el progreso nunca es negativo ni pasa de 1', () => {
@@ -256,6 +283,14 @@ test('la hoguera solo protege dentro de RADIO_FUEGO', () => {
   assert.equal(lejos, sin);
 });
 
+test('una banda sin asentar no tiene fuego aunque haya una hoguera terminada a la vista', () => {
+  const esc = escenaFuego({ hoguera: true });
+  esc.band.settled = false;
+  esc.band.settlement = null;
+  const sin = fríoTrasUnTick(escenaFuego({ hoguera: false }));
+  assert.equal(fríoTrasUnTick(esc), sin);
+});
+
 test('una hoguera a medio construir no calienta', () => {
   const esc = escenaFuego({ hoguera: false });
   esc.band.settlement.buildings[0].progress = 0.9;
@@ -282,4 +317,12 @@ test('el código de settlement.js no toca la rejilla ni el generador', () => {
   assert.ok(!/viableSites/.test(codigo), 'usa viableSites');
   assert.ok(!/\bforRadius\b/.test(codigo), 'usa forRadius');
   assert.deepEqual(codigo.match(/\bgrid\b(?!\.inBounds)/g) ?? [], [], 'usa grid más allá de grid.inBounds');
+});
+
+test('el relato de la hoguera no promete lo que la mecánica no cumple', () => {
+  const band = bandaComoda();
+  const s = foundSettlement(band, sitioBueno(), 1);
+  const [texto] = correr(s, band, 200);
+  assert.ok(texto.includes('hoguera'));
+  assert.ok(!/nadie|todos|siempre|nunca/i.test(texto), texto);
 });
