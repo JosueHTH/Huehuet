@@ -60,6 +60,16 @@ const faltaParaLaObra = (band, recurso) => {
 };
 const empuje = (band, recurso) => (faltaParaLaObra(band, recurso) ? EMPUJE_OBRA : 1);
 
+// La obra en curso ya tiene con qué avanzar: no falta ninguno de sus materiales. Entonces trabajar en
+// ella pesa como pesaba recogerlos, y la aldea se levanta en días en vez de en meses. Medido antes de
+// esto: una banda que fundaba el día 11 seguía sin hoguera el día 90 y se congelaba en el invierno,
+// porque construir puntuaba ~7 en calma y perdía contra explorar. Así la banda alterna sola: recoge
+// mientras falta material y construye en cuanto lo tiene.
+const obraPagada = (band) => {
+  const obra = obraActual(band);
+  return obra !== null && Object.keys(obra.cost ?? {}).every((recurso) => !faltaParaLaObra(band, recurso));
+};
+
 // Toma del recurso lo que haya a su alcance; devuelve lo obtenido (0 si no hay nada).
 function tomar(npc, ctx, resourceId, cantidad) {
   const celda = mejorCelda(npc, ctx, resourceId);
@@ -236,7 +246,9 @@ export const ACTIONS = [
     // Costura con Task 10: esta acción NO construye nada. Solo marca que el NPC dedica el tick a la obra
     // (npc.action = 'construir'). Task 10 cuenta cuántos NPCs la eligieron en el tick y lo convierte en
     // progreso con tickConstruction; el inventario y los edificios son suyos, nunca de aquí.
-    score: (npc, band) => (hayObra(band) ? PESO.construir * (0.2 + urgencia(npc.needs.frio)) : 0),
+    score: (npc, band) => (hayObra(band)
+      ? PESO.construir * (0.2 + urgencia(npc.needs.frio)) * (obraPagada(band) ? EMPUJE_OBRA : 1)
+      : 0),
     apply(npc) {
       npc.action = 'construir';
       return null;

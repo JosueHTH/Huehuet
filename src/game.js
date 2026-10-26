@@ -52,6 +52,7 @@ export function createGame(seed, opts = {}) {
 
   record(chronicle, {
     day: 0,
+    keep: true,
     type: 'inicio',
     text: `${livingNpcs(band).length} nómadas acampan en ${lugar(band.x, band.y)}. No conocen nada más allá de lo que alcanzan a ver, y buscan un lugar donde quedarse.`,
   });
@@ -70,8 +71,12 @@ export function clampBuildings(settlement, grid) {
   return settlement;
 }
 
+// Tipos que son hitos de la partida: el relato rutinario rota con el tope, estos no se pierden nunca.
+// (Lo rutinario son las líneas de la banda: hallazgos de exploración, muertes, caza.)
+const HITOS = new Set(['inicio', 'decision', 'asentamiento', 'construccion', 'fin']);
+
 const anotar = (game, clock, type, textos) => {
-  for (const text of textos) record(game.chronicle, { day: clock.day, type, text });
+  for (const text of textos) record(game.chronicle, { day: clock.day, type, text, keep: HITOS.has(type) });
 };
 
 // Funda la aldea si la banda ya está encima del sitio que eligió. La fundación es a la LLEGADA, no a la

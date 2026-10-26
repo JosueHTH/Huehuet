@@ -16,6 +16,7 @@ import { createNpc } from '../../src/agents/npc.js';
 import { createGrid } from '../../src/world/grid.js';
 import { createDiscovery } from '../../src/world/discovery.js';
 import { createClock } from '../../src/core/clock.js';
+import { MAX_ENTRADAS, record } from '../../src/chronicle.js';
 import { ambientUses } from './purity.js';
 
 // Estado comparable de una partida: todo lo que define el avance, sin funciones (rng, rejilla y reloj
@@ -137,12 +138,50 @@ test('hay semillas donde la banda elige bien y semillas donde se conforma', () =
   assert.ok(seConformaron.length > 0, `ninguna se conformó: ${JSON.stringify(historias)}`);
   // Conformarse es asentarse en algo que en calma se habría rechazado, con la necesidad apretando.
   for (const h of seConformaron) assert.ok(h.presion > 0, `semilla ${h.seed} se conformó sin presión`);
-  // Y el caso fuerte: alguna banda se asienta bien por debajo de lo que pediría en calma, apremiada.
-  const apurada = seConformaron.find((h) => h.presion >= 0.35 && h.media <= acceptanceThreshold(0) - 8);
-  assert.ok(apurada, `nadie se conformó de verdad (presión alta, media baja): ${JSON.stringify(seConformaron)}`);
+  assert.ok(seConformaron.length >= 2, `conformarse debe ser habitual, no una rareza: ${JSON.stringify(seConformaron)}`);
+  // Y el caso fuerte, fijado por su semilla para que una regresión lo nombre: la 22 es un mundo pobre
+  // (su mejor sitio con el mapa entero descubierto es 56.5) y la banda aguanta 64 días antes de
+  // aceptar un 51.8 frente a los 70 que pediría en calma, con la presión en 0.43.
+  const apurada = seConformaron.find((h) => h.seed === 22);
+  assert.ok(apurada, `la semilla 22 debía asentarse conformándose: ${JSON.stringify(historias)}`);
+  assert.ok(apurada.presion >= 0.35, `la 22 se conformó con poca presión (${apurada.presion.toFixed(2)})`);
+  assert.ok(apurada.media <= acceptanceThreshold(0) - 8, `la 22 ya no se asienta claramente por debajo del umbral en calma (${apurada.media.toFixed(1)})`);
   // Y el caso contrario: alguna se asienta porque el sitio es bueno, no porque no le quede otra.
   const tranquila = eligieronBien.find((h) => h.presion <= 0.3);
   assert.ok(tranquila, `nadie eligió bien en calma: ${JSON.stringify(eligieronBien)}`);
+});
+
+// El pago de todo el juego es llegar al sitio elegido y levantar la aldea. Si la hoguera no está lista
+// antes del invierno (día 90) la banda se congela, así que fundar tiene que servir de algo y pronto.
+test('una banda que funda termina su hoguera poco después, no meses más tarde', () => {
+  const PLAZO = 20;
+  const tardanzas = [];
+  for (const seed of [1, 2, 3, 4, 5]) {
+    const g = createGame(seed);
+    correrHasta(g, 400, (p) => p.band.settled || p.over);
+    if (!g.band.settled) continue;
+    const fundado = g.settlement.foundedDay;
+    correrHasta(g, PLAZO + 1, (p) => p.settlement.buildings[0].done || p.over);
+    const hoguera = g.settlement.buildings[0];
+    tardanzas.push({ seed, fundado, lista: hoguera.done ? g.clock.day - fundado : null, progreso: +hoguera.progress.toFixed(2) });
+  }
+  assert.ok(tardanzas.length >= 4, `solo ${tardanzas.length} de 5 fundaron`);
+  for (const t of tardanzas) {
+    assert.ok(t.lista !== null && t.lista <= PLAZO, `semilla ${t.seed}: la hoguera sigue al ${Math.round(t.progreso * 100)}% ${PLAZO} días después de fundar`);
+  }
+});
+
+test('la mayoría de las bandas que fundan sobreviven a su primer invierno', () => {
+  const resultados = [];
+  for (const seed of [1, 2, 3, 4, 5]) {
+    const g = createGame(seed);
+    correrHasta(g, 400, (p) => p.band.settled || p.over);
+    if (!g.band.settled) continue;
+    correrHasta(g, 130 - g.clock.day, (p) => p.over);   // el invierno va del día 90 al 119
+    resultados.push({ seed, vivos: livingNpcs(g.band).length, dia: g.clock.day });
+  }
+  const sobrevivieron = resultados.filter((r) => r.vivos > 0);
+  assert.ok(sobrevivieron.length > resultados.length / 2, `solo ${sobrevivieron.length} de ${resultados.length} pasaron el invierno: ${JSON.stringify(resultados)}`);
 });
 
 test('la aldea se levanta: al menos un edificio termina y la crónica lo cuenta', () => {
@@ -344,6 +383,30 @@ test('la obra no se atasca en silencio con un coste de cero: NaN no envenena el 
     const avance = avanceFinanciable(def.cost, Object.fromEntries(Object.keys(def.cost).map((id) => [id, 1e6])));
     assert.ok(Number.isFinite(avance) && avance > 0, `${def.id}: ${avance}`);
   }
+});
+
+test('la crónica llena no se come los hitos: la fundación sigue ahí tras rebasar el tope', () => {
+  const g = createGame(2);
+  correrHasta(g, 400, (p) => p.band.settled || p.over);
+  assert.ok(g.band.settled, 'la semilla 2 debería fundar');
+  correrHasta(g, 400, (p) => p.chronicle.entries.length >= MAX_ENTRADAS);
+  assert.equal(g.chronicle.entries.length, MAX_ENTRADAS, 'la crónica debe llegar a su tope');
+  const tipos = {};
+  for (const e of g.chronicle.entries) tipos[e.type] = (tipos[e.type] ?? 0) + 1;
+  assert.ok(g.chronicle.entries.some((e) => e.type === 'asentamiento'), `la fundación se perdió: ${JSON.stringify(tipos)}`);
+  assert.ok(g.chronicle.entries.some((e) => e.type === 'inicio'), `el comienzo se perdió: ${JSON.stringify(tipos)}`);
+  assert.ok(g.chronicle.entries.some((e) => e.type === 'decision'), `las decisiones se perdieron: ${JSON.stringify(tipos)}`);
+  // Y el relato rutinario sí rota: no se guarda todo para siempre.
+  assert.ok((tipos.banda ?? 0) > 0, 'el día a día debe seguir contándose');
+});
+
+test('el fin se registra aunque la crónica esté llena', () => {
+  const g = partidaMoribunda();
+  for (let i = 0; i < MAX_ENTRADAS; i++) record(g.chronicle, { day: 0, type: 'banda', text: `relleno ${i}` });
+  stepGame(g, 1);
+  assert.equal(g.over, true);
+  assert.ok(g.chronicle.entries.some((e) => e.type === 'fin'), 'el final no puede caerse del tope');
+  assert.equal(g.chronicle.entries.length, MAX_ENTRADAS);
 });
 
 // --- Pureza y determinismo -----------------------------------------------------------------------

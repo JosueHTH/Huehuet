@@ -494,3 +494,79 @@ test('los biomas tienen shelter y predators en 0..1 (de lo que depende el recort
     assert.ok(b.predators >= 0 && b.predators <= 1, `${id}.predators = ${b.predators}`);
   }
 });
+
+// --- Normalizador alcanzable (Task 11, palanca 1) -----------------------------------------------
+// Normalizar por la suma de TODOS los pesos suponía que existen sitios excelentes en los nueve
+// factores a la vez: ninguno de diez mundos pasaba de 64 con el umbral en calma en 70. Se normaliza
+// por lo realmente alcanzable y lo que puntúa de cada factor se recorta a ese máximo.
+
+// Un sitio buenísimo de verdad: río pegado, recursos de sobra, bosque alrededor y en lo alto.
+function sitioExcelente(season = 'verano') {
+  const grid = createGrid(25, 25);
+  for (const cell of grid.cells) {
+    cell.biome = 'bosque';
+    cell.elevation = 0.2;
+    for (const id of ['caza', 'forraje', 'leña', 'piedra']) cell.resources[id] = 1e6;
+  }
+  grid.at(C, C).elevation = 1;
+  const rio = grid.at(C + 1, C);
+  rio.biome = 'rio';
+  rio.river = true;
+  rio.resources.agua = 10;
+  const discovery = createDiscovery(grid);
+  discovery.reveal(C, C, 14);
+  return scoreSite(discovery, C, C, { grid, season });
+}
+
+test('valorQuePuntua recorta cada factor a lo alcanzable y deja enteras las penalizaciones', () => {
+  for (const [id, tope] of Object.entries(VALOR_ALCANZABLE)) {
+    assert.equal(valorQuePuntua(id, 1), tope, id);
+    assert.equal(valorQuePuntua(id, tope), tope, id);
+    assert.equal(valorQuePuntua(id, tope / 2), tope / 2, `${id} por debajo del tope no se toca`);
+  }
+  for (const id of ['inundacion', 'depredadores']) assert.equal(valorQuePuntua(id, 1), 1, id);
+  assert.equal(valorQuePuntua('factor-inventado', 0.42), 0.42, 'lo que no tiene tope pasa tal cual');
+});
+
+test('el normalizador es lo alcanzable, no la suma de pesos: un sitio excelente llega a ~100', () => {
+  const s = sitioExcelente();
+  const pesosASecas = SITE_FACTORS.reduce((a, f) => a + Math.max(0, f.weight), 0);
+  assert.ok(s.weightTotal < pesosASecas, `${s.weightTotal} debería ser menor que ${pesosASecas}`);
+  const positivas = s.factors.reduce((a, f) => a + Math.max(0, f.contribution), 0);
+  assert.ok(positivas > 95, `un sitio excelente debe agotar la escala: ${positivas}`);
+  assert.ok(positivas <= 100.0001, `pero no pasarse de 100: ${positivas}`);
+  assert.ok(s.total > 85, `y su total, ya con penalizaciones, debe ser alto: ${s.total}`);
+});
+
+test('las aportaciones positivas nunca suman más de 100, ni con recursos absurdos', () => {
+  for (const season of ['primavera', 'verano', 'otoño', 'invierno']) {
+    for (const s of [sitioExcelente(season), scoreSite(...sitioArgs({ agua: true, caza: 1e9, forraje: 1e9, leña: 1e9, piedra: 1e9 }, season))]) {
+      const positivas = s.factors.reduce((a, f) => a + Math.max(0, f.contribution), 0);
+      assert.ok(positivas <= 100.0001, `${season}: las positivas suman ${positivas}`);
+      const suma = s.factors.reduce((a, f) => a + f.contribution, 0);
+      assert.ok(Math.abs(suma - s.total) < 0.01, `${season}: el acotado a 100 rompió la identidad: suma ${suma} total ${s.total}`);
+    }
+  }
+});
+
+test('pasado lo alcanzable, más cantidad no puntúa más', () => {
+  // leña: el tope se alcanza con mucho menos que 1e6, así que multiplicar por mil no cambia nada.
+  const generoso = scoreSite(...sitioArgs({ agua: true, leña: 1e3 }));
+  const absurdo = scoreSite(...sitioArgs({ agua: true, leña: 1e6 }));
+  const aporta = (s) => s.factors.find((f) => f.id === 'leña').contribution;
+  assert.ok(aporta(generoso) > 0);
+  assert.equal(aporta(absurdo), aporta(generoso), 'el exceso no puede seguir sumando');
+  assert.equal(absurdo.total, generoso.total);
+  // El valor publicado, en cambio, sigue siendo el real: la interfaz no miente sobre lo que hay.
+  assert.ok(absurdo.factors.find((f) => f.id === 'leña').value > VALOR_ALCANZABLE.leña);
+});
+
+test('el mejor sitio de un mundo generado alcanza el umbral de una banda en calma', () => {
+  for (const seed of [21, 23, 42]) {
+    const world = generateWorld(seed);
+    const discovery = createDiscovery(world.grid);
+    discovery.reveal(Math.floor(world.grid.width / 2), Math.floor(world.grid.height / 2), 200);
+    const mejor = candidateSites(discovery, { grid: world.grid, season: 'verano' }, { limit: 1 })[0];
+    assert.ok(mejor.total >= acceptanceThreshold(0), `semilla ${seed}: el mejor sitio del mundo es ${mejor.total} y en calma se piden ${acceptanceThreshold(0)}`);
+  }
+});
