@@ -28,6 +28,8 @@ const MODIFICADOR_ESTACIONAL = {
 };
 
 const esAnegable = (celda) => celda.river || celda.biome === 'rio' || celda.biome === 'agua' || celda.biome === 'pantano';
+// Agua que no se puede habitar: igual que isWater del generador (lago o río).
+const esAgua = (celda) => celda.biome === 'agua' || celda.biome === 'rio';
 const esAguaDulce = (celda) => celda.river === true || celda.biome === 'rio';
 
 // Visita las celdas conocidas a distancia <= radio de (x, y). El descubrimiento ya descarta lo que cae fuera de la rejilla.
@@ -84,10 +86,12 @@ function valorRecurso(id, discovery, x, y, radio) {
 
 const modificador = (id, season) => MODIFICADOR_ESTACIONAL[id]?.[season] ?? 1;
 
-// SiteScore = { x, y, total 0..100, viable, factors: [{ id, label, value 0..1, weight, contribution }] }.
-// total = suma de aportaciones; cada aportación es valor × peso × modificador, repartida de modo que lo
-// máximo posible sume 100. Las penalizaciones nunca superan lo que suman los demás factores (total >= 0).
-// Un sitio no descubierto, en un lago o sin agua dulce conocida a 3 celdas no es viable: total 0 y aportaciones 0,
+// SiteScore = { x, y, total 0..100, viable, weightTotal, penaltyScale,
+//   factors: [{ id, label, value 0..1, weight (base), effectiveWeight (con estación), contribution }] }.
+// total = suma de aportaciones. El desglose se reproduce con lo publicado:
+//   contribution = value × effectiveWeight / weightTotal × 100 (× penaltyScale si effectiveWeight < 0),
+// con weightTotal = suma de los pesos efectivos positivos (lo máximo posible suma 100). Las penalizaciones nunca superan lo que suman los demás factores (total >= 0).
+// Un sitio no descubierto, en un lago o río, o sin agua dulce conocida a 3 celdas no es viable: total 0 y aportaciones 0,
 // pero los valores se calculan igualmente.
 export function scoreSite(discovery, x, y, ctx) {
   const sitio = discovery.knownCell(x, y);
@@ -100,13 +104,15 @@ export function scoreSite(discovery, x, y, ctx) {
     return Math.min(1, Math.max(0, valor));
   });
   const pesos = SITE_FACTORS.map((f) => f.weight * modificador(f.id, ctx.season));
-  const maximo = pesos.reduce((a, p) => a + Math.max(0, p), 0);
-  const viable = sitio !== null && sitio.biome !== 'agua' && valores[SITE_FACTORS.findIndex((f) => f.eliminatory)] > 0;
+  const pesoTotal = pesos.reduce((a, p) => a + Math.max(0, p), 0);
+  const viable = sitio !== null && !esAgua(sitio) && valores[SITE_FACTORS.findIndex((f) => f.eliminatory)] > 0;
 
-  let contribuciones = pesos.map((p, i) => (viable ? (valores[i] * p / maximo) * 100 : 0));
-  const positivo = contribuciones.reduce((a, c) => a + Math.max(0, c), 0);
-  const negativo = -contribuciones.reduce((a, c) => a + Math.min(0, c), 0);
-  if (negativo > positivo) contribuciones = contribuciones.map((c) => (c < 0 ? c * positivo / negativo : c));
+  // Aportación = valor × peso efectivo / pesoTotal × 100; las penalizaciones además × escalaPenalizacion.
+  const base = pesos.map((p, i) => (viable ? (valores[i] * p / pesoTotal) * 100 : 0));
+  const positivo = base.reduce((a, c) => a + Math.max(0, c), 0);
+  const negativo = -base.reduce((a, c) => a + Math.min(0, c), 0);
+  const escalaPenalizacion = negativo > positivo ? positivo / negativo : 1;
+  const contribuciones = base.map((c) => (c < 0 ? c * escalaPenalizacion : c));
   const total = Math.min(100, Math.max(0, contribuciones.reduce((a, c) => a + c, 0)));
 
   return {
@@ -114,8 +120,10 @@ export function scoreSite(discovery, x, y, ctx) {
     y,
     total,
     viable,
+    weightTotal: pesoTotal,
+    penaltyScale: escalaPenalizacion,
     factors: SITE_FACTORS.map((f, i) => ({
-      id: f.id, label: f.label, value: valores[i], weight: f.weight, contribution: contribuciones[i],
+      id: f.id, label: f.label, value: valores[i], weight: f.weight, effectiveWeight: pesos[i], contribution: contribuciones[i],
     })),
   };
 }
@@ -136,6 +144,7 @@ const RADIO_AGUA = SITE_FACTORS.find((f) => f.eliminatory).radius;
 // knownCells() copia y ordena el conjunto en cada llamada, pero medido en 96x96 completo cuesta ~0.4 ms
 // frente a ~60 ms de puntuar: no se guarda en caché.
 
+// Es solo una aceleración: scoreSite ya rechaza lo que no es viable, pero puntuar todo el mapa costaría mucho más.
 // Prueba de agua dulce, hecha aquí con lo que la banda ha visto: no se usa la lista de sitios del generador.
 function veAguaDulce(discovery, x, y) {
   let hay = false;

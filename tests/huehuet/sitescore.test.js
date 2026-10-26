@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createGrid } from '../../src/world/grid.js';
+import { createGrid, BIOMES } from '../../src/world/grid.js';
 import { createDiscovery } from '../../src/world/discovery.js';
 import { generateWorld } from '../../src/world/worldgen.js';
 import { SITE_FACTORS, scoreSite, acceptanceThreshold, candidateSites } from '../../src/tribe/sitescore.js';
@@ -161,7 +161,9 @@ test('la estación no cambia el peso ni el valor de la leña, solo su aportació
   const a = scoreSite(...sitioArgs({ agua: true, leña: 20 }, 'otoño')).factors.find((f) => f.id === 'leña');
   const b = scoreSite(...sitioArgs({ agua: true, leña: 20 }, 'verano')).factors.find((f) => f.id === 'leña');
   assert.equal(a.value, b.value);
-  assert.equal(a.weight, b.weight);
+  assert.equal(a.weight, b.weight, 'weight es el peso base');
+  assert.ok(a.effectiveWeight > b.effectiveWeight, 'effectiveWeight lleva el modificador estacional');
+  assert.equal(a.effectiveWeight, a.weight * 1.5);
 });
 
 test('scoreSite solo usa celdas conocidas', () => {
@@ -375,5 +377,118 @@ test('el valor de cada recurso crece de forma gradual y saturada, sin llegar a 1
     const valores = [1, 2, 5, 10, 20].map((n) => scoreSite(...sitioArgs({ agua: true, [id]: n })).factors.find((f) => f.id === id).value);
     for (let i = 1; i < valores.length; i++) assert.ok(valores[i] > valores[i - 1], `${id}: ${valores}`);
     assert.ok(valores[valores.length - 1] < 1, `${id} satura demasiado pronto: ${valores}`);
+  }
+});
+
+test('una celda de río no es un sitio viable, aunque tenga agua a distancia 0', () => {
+  const s = sitio({ agua: true, caza: 5 });
+  const rio = s.grid.at(C + 2, C);
+  const r = scoreSite(s.discovery, rio.x, rio.y, s.ctx);
+  assert.equal(r.viable, false);
+  assert.equal(r.total, 0);
+  assert.ok(!candidateSites(s.discovery, s.ctx, { limit: 1000 }).some((c) => c.x === rio.x && c.y === rio.y));
+});
+
+test('ningún candidato de un mundo generado es una celda de agua o río', () => {
+  for (const seed of [21, 22, 23, 24]) {
+    const world = generateWorld(seed);
+    const { discovery, ctx } = escenaDescubierta(world);
+    for (const c of candidateSites(discovery, ctx, { limit: 1000 })) {
+      const b = discovery.knownCell(c.x, c.y).biome;
+      assert.ok(b !== 'agua' && b !== 'rio', `semilla ${seed}: candidato en ${b} (${c.x},${c.y})`);
+    }
+  }
+});
+
+test('el desglose publicado reproduce cada aportación (peso efectivo, normalizador y escala de penalización)', () => {
+  const casos = [
+    sitioArgs({ agua: true, caza: 6, forraje: 4, leña: 20 }, 'otoño'),
+    sitioArgs({ agua: true, caza: 6, leña: 20 }, 'verano'),
+  ];
+  const pantanoso = sitio({ agua: false });
+  for (const cell of pantanoso.grid.cells) if (Math.hypot(cell.x - C, cell.y - C) <= 4) cell.biome = 'pantano';
+  const rio = pantanoso.grid.at(C + 3, C);
+  rio.biome = 'rio'; rio.river = true;
+  casos.push([pantanoso.discovery, C, C, { ...pantanoso.ctx, season: 'otoño' }]);
+  for (const args of casos) {
+    const s = scoreSite(...args);
+    assert.equal(s.viable, true);
+    const pesoTotal = s.factors.reduce((a, f) => a + Math.max(0, f.effectiveWeight), 0);
+    assert.ok(Math.abs(s.weightTotal - pesoTotal) < 1e-9, 'weightTotal = suma de pesos efectivos positivos');
+    for (const f of s.factors) {
+      const escala = f.effectiveWeight < 0 ? s.penaltyScale : 1;
+      const esperado = (f.value * f.effectiveWeight / s.weightTotal) * 100 * escala;
+      assert.ok(Math.abs(esperado - f.contribution) < 1e-9, `${f.id}: ${esperado} vs ${f.contribution}`);
+    }
+  }
+  const [, , , ctxOtoño] = casos[0];
+  const leña = scoreSite(...casos[0]).factors.find((f) => f.id === 'leña');
+  assert.equal(leña.effectiveWeight, leña.weight * 1.5, 'el modificador de leña está activo en otoño');
+  assert.ok(ctxOtoño.season === 'otoño');
+  assert.ok(scoreSite(...casos[2]).penaltyScale < 1, 'el caso pantanoso activa el tope de penalización');
+  assert.equal(scoreSite(...casos[0]).penaltyScale, 1);
+});
+
+test('inundacion es un factor vivo: un sitio rodeado de agua puntúa menos que el mismo sitio en seco', () => {
+  const seco = sitio({ agua: true, caza: 6, forraje: 4 });
+  const mojado = sitio({ agua: true, caza: 6, forraje: 4 });
+  for (const cell of mojado.grid.cells) {
+    const d = Math.hypot(cell.x - C, cell.y - C);
+    if (d > 0 && d <= 2 && !(cell.x === C + 2 && cell.y === C)) { cell.biome = 'rio'; cell.river = true; }
+  }
+  const a = scoreSite(seco.discovery, C, C, seco.ctx);
+  const b = scoreSite(mojado.discovery, C, C, mojado.ctx);
+  const fa = a.factors.find((f) => f.id === 'inundacion');
+  const fb = b.factors.find((f) => f.id === 'inundacion');
+  assert.ok(fb.value > fa.value, `${fb.value} vs ${fa.value}`);
+  assert.ok(fb.contribution < fa.contribution);
+  assert.ok(fa.value > 0 && fa.value < 1, 'incluso el sitio seco ve el río de al lado');
+});
+
+test('agua: más cerca es mejor en cada distancia de 1 a 3, y a 4 no es viable', () => {
+  const resultados = [1, 2, 3, 4].map((d) => {
+    const s = sitio({ caza: 5 });
+    const rio = s.grid.at(C + d, C);
+    rio.biome = 'rio'; rio.river = true;
+    return scoreSite(s.discovery, C, C, s.ctx);
+  });
+  const valores = resultados.map((r) => r.factors.find((f) => f.id === 'agua').value);
+  assert.ok(valores[0] > valores[1] && valores[1] > valores[2] && valores[2] > valores[3], `${valores}`);
+  assert.ok(resultados[0].total > resultados[1].total && resultados[1].total > resultados[2].total);
+  assert.equal(resultados[3].total, 0);
+  const aDistanciaCero = sitio({ caza: 5 });
+  const celda = aDistanciaCero.grid.at(C, C); celda.biome = 'rio'; celda.river = true;
+  assert.equal(scoreSite(aDistanciaCero.discovery, C, C, aDistanciaCero.ctx).factors.find((f) => f.id === 'agua').value, 1);
+});
+
+test('defensa y refugio no bajan al aumentar su entrada', () => {
+  let previa = { d: -1, dt: -1 };
+  for (const altura of [0, 0.1, 0.3, 0.6, 1]) {
+    const s = sitio({ agua: true });
+    s.grid.at(C, C).elevation = altura;
+    const r = scoreSite(s.discovery, C, C, s.ctx);
+    const v = r.factors.find((f) => f.id === 'defensa').value;
+    assert.ok(v >= previa.d && r.total >= previa.dt, `defensa con altura ${altura}`);
+    previa = { d: v, dt: r.total };
+  }
+  assert.ok(previa.d > 0);
+  let prev = { v: -1, t: -1 };
+  for (const radio of [0, 1, 2, 3]) {
+    const s = sitio({ agua: true });
+    for (const cell of s.grid.cells) {
+      if (Math.hypot(cell.x - C, cell.y - C) <= radio && !cell.river) cell.biome = 'montaña';
+    }
+    const r = scoreSite(s.discovery, C, C, s.ctx);
+    const v = r.factors.find((f) => f.id === 'refugio').value;
+    assert.ok(v >= prev.v, `refugio con radio ${radio}`);
+    prev = { v, t: r.total };
+  }
+  assert.ok(prev.v > 0.3);
+});
+
+test('los biomas tienen shelter y predators en 0..1 (de lo que depende el recorte de valores)', () => {
+  for (const [id, b] of Object.entries(BIOMES)) {
+    assert.ok(b.shelter >= 0 && b.shelter <= 1, `${id}.shelter = ${b.shelter}`);
+    assert.ok(b.predators >= 0 && b.predators <= 1, `${id}.predators = ${b.predators}`);
   }
 });
