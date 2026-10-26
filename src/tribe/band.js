@@ -166,7 +166,9 @@ function cercaDelFuego(band, npc) {
 // --- Tick ------------------------------------------------------------------------------------
 
 // Un NPC: necesidades, muerte por saturación sostenida, elección y aplicación de una acción.
-function tickNpc(npc, band, ctx, rng, actions, seMovio, cronica) {
+// `muertes` recoge el ÍNDICE en `cronica` de cada línea que cuenta una muerte, para que quien escriba
+// la crónica pueda distinguirlas sin mirar el texto (ver `conMuertes`).
+function tickNpc(npc, band, ctx, rng, actions, seMovio, cronica, muertes) {
   const celda = ctx.discovery.knownCell(npc.x, npc.y) ?? ctx.discovery.knownCell(band.x, band.y);
   npc.needs = tickNeeds(npc.needs, {
     hour: ctx.clock.hour,
@@ -182,6 +184,7 @@ function tickNpc(npc, band, ctx, rng, actions, seMovio, cronica) {
     npc.alive = false;
     band.recentDeaths = (band.recentDeaths ?? 0) + 1;
     cronica.push(`${npc.nombre} murió de ${CAUSA[causa]}.`);
+    muertes.push(cronica.length - 1);
     return;
   }
   const accion = chooseAction(npc, band, ctx, actions);
@@ -191,13 +194,20 @@ function tickNpc(npc, band, ctx, rng, actions, seMovio, cronica) {
   if (texto) cronica.push(texto);
 }
 
+// Cuelga del arreglo de crónica los índices de las líneas que cuentan una muerte. La propiedad es NO
+// enumerable a propósito: el valor devuelto sigue siendo, a todos los efectos (deepEqual, JSON, for..of),
+// el mismo arreglo de textos de siempre, y quien quiera tratar las muertes aparte no tiene que adivinar
+// cuál línea lo es leyendo prosa en español. Una muerte con nombre es lo que un jugador recuerda.
+const conMuertes = (cronica, muertes) => Object.defineProperty(cronica, 'muertes', { value: muertes });
+
 // Avanza la banda una hora. `actions` solo existe para poder probar el caso IDLE.
 export function tickBand(band, ctx, rng, actions = ACTIONS) {
-  if (isExtinct(band)) return [];
+  if (isExtinct(band)) return conMuertes([], []);
   const cronica = [];
+  const muertes = [];
   const seMovio = migrar(band, ctx, cronica);
-  for (const npc of livingNpcs(band)) tickNpc(npc, band, ctx, rng, actions, seMovio, cronica);
+  for (const npc of livingNpcs(band)) tickNpc(npc, band, ctx, rng, actions, seMovio, cronica, muertes);
   band.recentDeaths = Math.max(0, (band.recentDeaths ?? 0) - DESVANECER_MUERTES);
-  return cronica;
+  return conMuertes(cronica, muertes);
 }
 

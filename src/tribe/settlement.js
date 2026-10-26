@@ -8,7 +8,7 @@ export { RADIO_FUEGO };
 // Cifras de balance (inventadas en la Etapa 1, a afinar jugando).
 // work = horas-persona de obra; cost = lo que se gasta en total, repartido en proporción al avance.
 export const BUILDINGS = [
-  { id: 'hoguera', label: 'Hoguera', cost: { leña: 6 }, work: 12, order: 0 },
+  { id: 'hoguera', label: 'Hoguera', cost: { leña: 6 }, work: 12, order: 0, warmth: RADIO_FUEGO },
   { id: 'choza', label: 'Choza', cost: { leña: 12, piedra: 4 }, work: 48, order: 1 },
   { id: 'almacen', label: 'Almacén', cost: { leña: 16, piedra: 10 }, work: 72, order: 2 },
 ];
@@ -30,8 +30,10 @@ export function foundSettlement(band, site, day) {
   const { x, y } = site;
   const buildings = BUILDINGS.map((def, i) => {
     const [dx, dy] = i === 0 ? [0, 0] : ANILLO[(i - 1) % ANILLO.length];
-    // `cost` se publica en el edificio para que la banda sepa qué material le falta sin conocer este catálogo.
-    return { id: def.id, x: x + dx * RADIO_ANILLO, y: y + dy * RADIO_ANILLO, cost: { ...def.cost }, progress: 0, done: false };
+    // `cost` y `warmth` se publican en el edificio para que la banda sepa qué material le falta y hasta
+    // dónde calienta la hoguera sin conocer este catálogo (la misma costura, sin importar tribe/ desde agents/).
+    const edificio = { id: def.id, x: x + dx * RADIO_ANILLO, y: y + dy * RADIO_ANILLO, cost: { ...def.cost }, progress: 0, done: false };
+    return def.warmth === undefined ? edificio : { ...edificio, warmth: def.warmth };
   });
   const settlement = { x, y, foundedDay: day, buildings, queue: BUILDINGS.map((b) => b.id) };
   band.settled = true;

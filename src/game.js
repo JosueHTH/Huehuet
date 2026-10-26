@@ -72,12 +72,21 @@ export function clampBuildings(settlement, grid) {
 }
 
 // Tipos que son hitos de la partida: el relato rutinario rota con el tope, estos no se pierden nunca.
-// (Lo rutinario son las líneas de la banda: hallazgos de exploración, muertes, caza.)
-const HITOS = new Set(['inicio', 'decision', 'asentamiento', 'construccion', 'fin']);
+// Lo rutinario son los hallazgos de exploración y las cacerías; las muertes NO lo son: un NPC con
+// nombre que se muere de frío es justo lo que el jugador recuerda, y es la contraparte de las líneas
+// de disidencia (que alguien advirtiera del río importa si "murió de frío" sigue ahí cuarenta días
+// después). `tickBand` las marca por índice, así que no hay que reconocerlas por el texto.
+const HITOS = new Set(['inicio', 'decision', 'asentamiento', 'construccion', 'fin', 'muerte']);
 
 const anotar = (game, clock, type, textos) => {
   for (const text of textos) record(game.chronicle, { day: clock.day, type, text, keep: HITOS.has(type) });
 };
+
+// Las líneas de la banda, cada una con su tipo: 'muerte' las que lo son, 'banda' el resto.
+function anotarBanda(game, clock, lineas) {
+  const muertes = new Set(lineas.muertes ?? []);
+  lineas.forEach((text, i) => anotar(game, clock, muertes.has(i) ? 'muerte' : 'banda', [text]));
+}
 
 // Funda la aldea si la banda ya está encima del sitio que eligió. La fundación es a la LLEGADA, no a la
 // decisión: entre una y otra la banda camina, y puede incluso rendirse y volver a buscar.
@@ -100,7 +109,7 @@ function simularTick(game, clock) {
   const ctx = { grid, discovery, clock, season: clock.season };
 
   regenerateResources(grid, 1);
-  anotar(game, clock, 'banda', tickBand(band, ctx, rng));
+  anotarBanda(game, clock, tickBand(band, ctx, rng));
 
   if (isExtinct(band)) {
     game.over = true;

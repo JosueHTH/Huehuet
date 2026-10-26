@@ -171,17 +171,48 @@ test('una banda que funda termina su hoguera poco después, no meses más tarde'
   }
 });
 
-test('la mayoría de las bandas que fundan sobreviven a su primer invierno', () => {
-  const resultados = [];
-  for (const seed of [1, 2, 3, 4, 5]) {
+// Las dos mitades del mismo trato: la aldea terminada tiene que pagar (se sobrevive al invierno), y el
+// invierno tiene que seguir doliendo (la extinción sigue siendo alcanzable). Si lo primero se cumpliera
+// siempre y en todas partes, el arco se quedaría sin apuesta.
+const SEMILLAS_INVIERNO = [1, 2, 3, 4, 5, 9, 11];
+const inviernos = new Map();   // simular un invierno cuesta segundos: las dos mitades comparten la medición
+
+function inviernoDe(seed) {
+  if (!inviernos.has(seed)) {
     const g = createGame(seed);
     correrHasta(g, 400, (p) => p.band.settled || p.over);
-    if (!g.band.settled) continue;
     correrHasta(g, 130 - g.clock.day, (p) => p.over);   // el invierno va del día 90 al 119
-    resultados.push({ seed, vivos: livingNpcs(g.band).length, dia: g.clock.day });
+    inviernos.set(seed, g.band.settled
+      ? { seed, vivos: livingNpcs(g.band).length, aldea: g.settlement.queue.length === 0, dia: g.clock.day }
+      : null);
   }
-  const sobrevivieron = resultados.filter((r) => r.vivos > 0);
-  assert.ok(sobrevivieron.length > resultados.length / 2, `solo ${sobrevivieron.length} de ${resultados.length} pasaron el invierno: ${JSON.stringify(resultados)}`);
+  return inviernos.get(seed);
+}
+
+const inviernosMedidos = () => SEMILLAS_INVIERNO.map(inviernoDe).filter(Boolean);
+
+test('la aldea terminada paga: casi todas las bandas que la levantan pasan su primer invierno', () => {
+  const conAldea = inviernosMedidos().filter((r) => r.aldea);
+  assert.ok(conAldea.length >= 5, `muy pocas terminaron la aldea: ${JSON.stringify(inviernosMedidos())}`);
+  const vivas = conAldea.filter((r) => r.vivos > 0);
+  assert.ok(vivas.length >= Math.ceil(conAldea.length * 2 / 3),
+    `con la aldea en pie solo sobrevivieron ${vivas.length} de ${conAldea.length}: ${JSON.stringify(conAldea)}`);
+  // Fijada por su número: sin el tirón de la hoguera, esta banda se congelaba el día 98 con su aldea
+  // entera en pie, porque su gente andaba lejos del fuego. Es el caso que el arreglo rescata.
+  const rescatada = inviernoDe(2);
+  assert.ok(rescatada.aldea && rescatada.vivos > 0, `la semilla 2 vuelve a morir con la aldea en pie: ${JSON.stringify(rescatada)}`);
+});
+
+test('el invierno sigue doliendo: la extinción sigue siendo alcanzable', () => {
+  const resultados = inviernosMedidos();
+  const extintas = resultados.filter((r) => r.vivos === 0);
+  assert.ok(extintas.length > 0, `ninguna de las ${resultados.length} bandas se extinguió: el invierno dejó de ser una apuesta`);
+  const vivas = resultados.filter((r) => r.vivos > 0);
+  assert.ok(vivas.length > extintas.length, `el invierno mata demasiado: vivas ${vivas.length}, extintas ${extintas.length}`);
+  // Fijada por su número para que una regresión la nombre: la 9 funda el día 16, levanta la aldea
+  // entera y aun así se apaga en el invierno.
+  const congelada = inviernoDe(9);
+  assert.ok(congelada && congelada.vivos === 0, `la semilla 9 ya no se congela: ${JSON.stringify(congelada)}`);
 });
 
 test('la aldea se levanta: al menos un edificio termina y la crónica lo cuenta', () => {
@@ -398,6 +429,39 @@ test('la crónica llena no se come los hitos: la fundación sigue ahí tras reba
   assert.ok(g.chronicle.entries.some((e) => e.type === 'decision'), `las decisiones se perdieron: ${JSON.stringify(tipos)}`);
   // Y el relato rutinario sí rota: no se guarda todo para siempre.
   assert.ok((tipos.banda ?? 0) > 0, 'el día a día debe seguir contándose');
+});
+
+test('las muertes no se desalojan: quien murió sigue nombrado cuando la crónica se llena', () => {
+  const g = createGame(2);   // pierde seis personas y desborda el tope de la crónica
+  const muertos = new Map();   // id -> día en que murió, contado por las banderas de vida, no por el texto
+  for (let d = 0; d < 300 && g.chronicle.entries.length < MAX_ENTRADAS + 50; d++) {
+    const vivos = new Set(livingNpcs(g.band).map((n) => n.id));
+    stepGame(g, 24);
+    for (const npc of g.band.npcs) if (vivos.has(npc.id) && !npc.alive) muertos.set(npc.id, g.clock.day);
+    if (g.over) break;
+  }
+  assert.ok(muertos.size >= 2, `la semilla 2 debería perder gente: murieron ${muertos.size}`);
+  assert.ok(g.chronicle.entries.length >= MAX_ENTRADAS, `la crónica debe desbordar: ${g.chronicle.entries.length}`);
+  const lineasDeMuerte = g.chronicle.entries.filter((e) => e.type === 'muerte');
+  assert.equal(lineasDeMuerte.length, muertos.size, `murieron ${muertos.size} y la crónica recuerda ${lineasDeMuerte.length}`);
+  for (const npc of g.band.npcs) {
+    if (!muertos.has(npc.id)) continue;
+    assert.ok(lineasDeMuerte.some((e) => e.text.includes(npc.nombre)), `${npc.nombre} murió y ya nadie lo recuerda`);
+  }
+});
+
+test('una muerte con nombre sobrevive a mil líneas de rutina', () => {
+  const g = createGame(1);
+  const victima = g.band.npcs[0];
+  victima.needs.sed = 100;
+  victima.saturacion = TICKS_HASTA_MORIR;   // muere en el tick siguiente, por el camino normal
+  stepGame(g, 1);
+  assert.equal(victima.alive, false);
+  const muerte = g.chronicle.entries.find((e) => e.type === 'muerte');
+  assert.ok(muerte && muerte.text.includes(victima.nombre), `la muerte no quedó anotada como tal: ${JSON.stringify(g.chronicle.entries.slice(-3))}`);
+  for (let i = 0; i < MAX_ENTRADAS * 2; i++) record(g.chronicle, { day: 1, type: 'banda', text: `rutina ${i}` });
+  assert.ok(g.chronicle.entries.some((e) => e.type === 'muerte' && e.text.includes(victima.nombre)),
+    `${victima.nombre} murió y el día a día se la llevó por delante`);
 });
 
 test('el fin se registra aunque la crónica esté llena', () => {

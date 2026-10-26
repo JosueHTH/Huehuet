@@ -33,6 +33,18 @@ const alcanzable = (npc, ctx, resourceId) => mejorCelda(npc, ctx, resourceId) !=
 const disponibilidad = (npc, ctx, resourceId, suficiente) =>
   Math.min(1, (mejorCelda(npc, ctx, resourceId)?.resources[resourceId] ?? 0) / suficiente);
 
+// La hoguera encendida de la aldea, con el alcance que publica el asentamiento, y si el NPC se ha
+// quedado fuera de su calor. Un NPC que deambula lejos se congela aunque la aldea esté levantada:
+// medido, dos de diez bandas morían con su aldea en pie. Con esto el frío lo trae de vuelta al fuego,
+// que es lo que ya prometía la propia crónica de la hoguera ("la banda empezó a reunirse a su alrededor").
+const hogueraEncendida = (band) =>
+  band.settlement?.buildings?.find((b) => b.id === 'hoguera' && b.done && b.warmth > 0) ?? null;
+
+function fueraDelFuego(npc, band) {
+  const fuego = hogueraEncendida(band);
+  return fuego !== null && Math.max(Math.abs(npc.x - fuego.x), Math.abs(npc.y - fuego.y)) > fuego.warmth;
+}
+
 // Distancia (Chebyshev) del NPC al punto de la banda; los NPCs orbitan ese punto.
 const distanciaALaBanda = (npc, band) => Math.max(Math.abs(band.x - npc.x), Math.abs(band.y - npc.y));
 
@@ -233,7 +245,10 @@ export const ACTIONS = [
   {
     id: 'seguir',
     label: 'Volver con la banda',
-    score: (npc, band) => PESO.seguir * Math.min(1, distanciaALaBanda(npc, band) / 8) * (0.5 + 0.5 * npc.traits.cautela),
+    // El segundo término es el del frío: con una hoguera encendida y el NPC fuera de su calor, volver
+    // al campamento es la salida, igual que explorar lo es cuando no hay agua al alcance.
+    score: (npc, band) => PESO.seguir * Math.min(1, distanciaALaBanda(npc, band) / 8) * (0.5 + 0.5 * npc.traits.cautela)
+      + PESO.desesperacion * urgencia(npc.needs.frio) * (fueraDelFuego(npc, band) ? 1 : 0),
     apply(npc, band) {
       npc.x += Math.sign(band.x - npc.x);
       npc.y += Math.sign(band.y - npc.y);
