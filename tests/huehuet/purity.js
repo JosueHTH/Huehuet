@@ -64,6 +64,8 @@ const AMBIENT = [
   [/\bwindow\b/, 'window'],
   [/\bdocument\b/, 'document'],
   [/\blocalStorage\b/, 'localStorage'],
+  [/\beval\s*\(/, 'eval'],
+  [/\bnew\s+Function\s*\(/, 'new Function'],
 ];
 
 // Math['random'] necesita sus cadenas para verse, así que se busca sobre el código con cadenas.

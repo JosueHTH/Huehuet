@@ -210,6 +210,14 @@ test('el detector marca APIs ambientales en código real', () => {
   assert.deepEqual(ambientUses('localStorage.clear();'), ['localStorage']);
 });
 
+test('el detector marca ejecución indirecta (eval, new Function)', () => {
+  assert.deepEqual(ambientUses('eval("Math.random()");'), ['eval']);
+  assert.deepEqual(ambientUses('eval ("1");'), ['eval']);
+  assert.deepEqual(ambientUses('const f = new Function("return Date.now()");'), ['new Function']);
+  assert.deepEqual(ambientUses('const f = new  Function ("return 1");'), ['new Function']);
+  assert.deepEqual(ambientUses('const retrieval = 1; const Functional = 2;'), []);
+});
+
 test('el detector ve dentro de la interpolación de plantillas', () => {
   assert.deepEqual(ambientUses('const s = `${Date.now()}`;'), ['Date.now']);
 });
