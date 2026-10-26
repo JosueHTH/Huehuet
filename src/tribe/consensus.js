@@ -34,18 +34,30 @@ const limitar = (v, min, max) => Math.min(max, Math.max(min, v));
 export function npcSiteScore(npc, site) {
   if (!site.viable) return 0;
   const { cautela = 0, audacia = 0, sabiduria = 0 } = npc.traits ?? {};
-  const base = site.factors.map((f) => {
+  const pesos = site.factors.map((f) => {
     let peso = f.effectiveWeight;
     if (CAUTELA.factores.includes(f.id)) peso *= 1 + CAUTELA.aumento * cautela;
     if (AUDACIA.factores.includes(f.id)) peso *= 1 + AUDACIA.aumento * audacia;
-    return f.value * peso / site.weightTotal * 100;
+    return peso;
   });
+  // Se renormaliza por la suma de pesos positivos YA reponderados: dar más peso a un factor lo vuelve más
+  // importante frente a los demás, no más grande en total. Así la visión de cada NPC sigue siendo un 0..100 del
+  // mismo sitio y los rasgos no inflan (ni desinflan) la media de la banda. Sin rasgos coincide con site.total.
+  const denominador = pesos.reduce((a, p) => a + Math.max(0, p), 0);
+  const base = site.factors.map((f, i) => (denominador > 0 ? f.value * pesos[i] / denominador * 100 : 0));
   const positivo = base.reduce((a, c) => a + Math.max(0, c), 0);
   const negativo = -base.reduce((a, c) => a + Math.min(0, c), 0);
   const escala = negativo > positivo ? positivo / negativo : 1;
   const propia = limitar(base.reduce((a, c) => a + (c < 0 ? c * escala : c), 0), 0, 100);
   const mezcla = limitar(sabiduria, 0, 1) * MEZCLA_SABIDURIA;
   return propia * (1 - mezcla) + site.total * mezcla;
+}
+
+// Disidente: quien se desvía MÁS de UMBRAL_DISIDENCIA puntos de la media (exactamente 20 no cuenta). Lleva su nombre.
+export function dissentersOf(votes, average) {
+  return votes
+    .map((v) => ({ npcId: v.npcId, nombre: v.nombre, score: v.score, delta: v.score - average }))
+    .filter((d) => Math.abs(d.delta) > UMBRAL_DISIDENCIA);
 }
 
 // Consensus = { average, votes: [{ npcId, nombre, score, elder, weight }], dissenters: [{ npcId, nombre, score, delta }] }.
@@ -57,10 +69,7 @@ export function evaluateConsensus(band, site) {
   });
   const pesoTotal = votes.reduce((a, v) => a + v.weight, 0);
   const average = pesoTotal === 0 ? 0 : votes.reduce((a, v) => a + v.score * v.weight, 0) / pesoTotal;
-  const dissenters = votes
-    .map((v) => ({ npcId: v.npcId, nombre: v.nombre, score: v.score, delta: v.score - average }))
-    .filter((d) => Math.abs(d.delta) > UMBRAL_DISIDENCIA);
-  return { average, votes, dissenters };
+  return { average, votes, dissenters: dissentersOf(votes, average) };
 }
 
 // --- Memoria de abandonos ----------------------------------------------------------------------------
@@ -92,7 +101,7 @@ function factorDebil(site) {
 
 function razonAsentarse(site, consenso, umbral, presion) {
   const decisivo = factorDecisivo(site);
-  if (site.total >= acceptanceThreshold(0)) {
+  if (consenso.average >= acceptanceThreshold(0)) {
     return `La banda decide asentarse en ${lugar(site)}: lo que más pesa es ${decisivo} y el consejo lo ve claro (${redondear(consenso.average)} de ${redondear(umbral)}).`;
   }
   return `La banda no puede seguir esperando y se asienta en ${lugar(site)}, aunque no es un lugar ideal (${redondear(consenso.average)} frente a los ${redondear(acceptanceThreshold(0))} que pediría en calma): lo que lo salva es ${decisivo}. Apremia la necesidad (${Math.round(presion * 100)}%).`;
@@ -111,12 +120,12 @@ export function decideSettlement(band, discovery, ctx) {
   const threshold = acceptanceThreshold(pressure);
   if (band.settled) return vacia({ pressure, threshold, reason: 'La banda ya está asentada: no hay nada más que decidir.' });
   const excluidas = sitiosExcluidos(band, discovery);
-  const [site] = candidateSites(discovery, ctx, { exclude: excluidas });
+  let [site] = candidateSites(discovery, ctx, { exclude: excluidas });
+  // Si lo único elegible está excluido, la exclusión caduca: en un mapa casi explorado no habría nada nuevo
+  // que descubrir y el recuerdo sería una trampa permanente.
+  if (!site && excluidas.length > 0) [site] = candidateSites(discovery, ctx);
   if (!site) {
-    const reason = excluidas.length > 0
-      ? 'Los lugares que la banda conoce son los que ya abandonó por inalcanzables: tiene que descubrir más tierra antes de volver a elegir.'
-      : 'La banda aún no conoce ningún lugar con agua dulce donde asentarse y sigue explorando.';
-    return vacia({ pressure, threshold, reason });
+    return vacia({ pressure, threshold, reason: 'La banda aún no conoce ningún lugar con agua dulce donde asentarse y sigue explorando.' });
   }
   const consensus = evaluateConsensus(band, site);
   if (consensus.votes.length === 0) {
@@ -135,8 +144,12 @@ const lineaDisidente = (d, site) =>
 // Evalúa solo si toca: cada INTERVALO_EVALUACION ticks desde band.lastEvaluation, o antes (pasados ESPERA_MINIMA)
 // si la presión subió SALTO_PRESION desde la última evaluación. Devuelve null cuando no toca; si toca, anota la
 // evaluación en la banda y devuelve { decision, chronicle }. Si decide asentarse fija band.site como destino.
+// Mientras band.site esté fijado (la banda camina hacia él) no se vuelve a decidir: ni cambia el destino ni se
+// repite la crónica. Si lo abandona (band.site a null), la siguiente evaluación decide de nuevo con su exclusión.
+// La crónica solo habla cuando cambia el resultado (sitio, veredicto o número de abandonos): un mismo rechazo
+// no se repite cada día. Los disidentes solo se anotan si la banda se asienta: solo entonces nadie los escuchó.
 export function considerSettlement(band, discovery, ctx, tick) {
-  if (band.settled) return null;
+  if (band.settled || band.site) return null;
   const transcurrido = tick - band.lastEvaluation;
   const presion = bandPressure(band, ctx);
   const subida = presion - (band.lastEvalPressure ?? presion) >= SALTO_PRESION;
@@ -146,7 +159,10 @@ export function considerSettlement(band, discovery, ctx, tick) {
   band.lastEvalPressure = presion;
   const decision = decideSettlement(band, discovery, ctx);
   if (decision.settle) band.site = { x: decision.site.x, y: decision.site.y };
+  const clave = `${decision.site ? `${decision.site.x},${decision.site.y}` : 'sin-sitio'}|${decision.settle}|${(band.abandonedSites ?? []).length}`;
+  if (clave === band.lastDecisionKey) return { decision, chronicle: [] };
+  band.lastDecisionKey = clave;
   const chronicle = [decision.reason];
-  if (decision.site) for (const d of decision.consensus?.dissenters ?? []) chronicle.push(lineaDisidente(d, decision.site));
+  if (decision.settle) for (const d of decision.consensus.dissenters) chronicle.push(lineaDisidente(d, decision.site));
   return { decision, chronicle };
 }

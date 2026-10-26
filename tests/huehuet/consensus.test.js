@@ -10,7 +10,7 @@ import { scoreSite, candidateSites, acceptanceThreshold } from '../../src/tribe/
 import {
   npcSiteScore, evaluateConsensus, decideSettlement, considerSettlement,
   RADIO_SITIO_ABANDONADO, CRECIMIENTO_PARA_REINTENTAR, INTERVALO_EVALUACION, SALTO_PRESION, ESPERA_MINIMA,
-  registrarAbandono, sitiosExcluidos,
+  registrarAbandono, sitiosExcluidos, dissentersOf,
 } from '../../src/tribe/consensus.js';
 import { codeOnly } from './purity.js';
 
@@ -228,7 +228,7 @@ test('la audacia sube el peso de caza y piedra', () => {
   assert.ok(npcSiteScore({ traits: { ...NEUTRO, audacia: 1 } }, s) > s.total + 0.5);
   const { discovery: d2, ctx: c2 } = escena({ recursos: { forraje: 30 } });
   const s2 = scoreSite(d2, C, C, c2);
-  assert.ok(Math.abs(npcSiteScore({ traits: { ...NEUTRO, audacia: 1 } }, s2) - s2.total) < 1e-9, 'sin caza ni piedra la audacia no cambia nada');
+  assert.ok(npcSiteScore({ traits: { ...NEUTRO, audacia: 1 } }, s2) < s2.total, 'sin caza ni piedra el audaz valora menos el sitio');
 });
 
 test('la sabiduría acerca la puntuación al total objetivo', () => {
@@ -401,9 +401,7 @@ test('el consenso solo lee el mundo por discovery: ni grid.at ni grid.cells', ()
   assert.doesNotMatch(fuente, /\bcells\b/);
   assert.doesNotMatch(fuente, /forRadius/);
   assert.doesNotMatch(fuente, /viableSites/);
-  for (const uso of fuente.matchAll(/\bgrid\b(?!\s*[,}:])\s*(\.\s*\w+)?/g)) {
-    assert.ok(!uso[1] || /inBounds/.test(uso[1]), `uso prohibido de grid: ${uso[0]}`);
-  }
+  assert.deepEqual(fuente.match(/\bgrid\b(?!\.inBounds)/g) ?? [], [], 'usa grid más allá de grid.inBounds');
 });
 
 test('una rejilla cuya lectura directa lanza no afecta a la decisión', () => {
@@ -472,18 +470,22 @@ test('abandonar sitios sucesivos no hace buclear a la banda: cada propuesta es n
   assert.ok(vistos.length >= 2);
 });
 
-test('si todo lo conocido está excluido, no hay sitio y la razón lo explica', () => {
+test('si todo lo conocido está excluido la exclusión caduca: no es una trampa permanente', () => {
   const e = escena({ recursos: { caza: 8 }, reveal: 6 });
   const band = bandaComoda();
+  const vistos = [];
   for (let i = 0; i < 40; i++) {
     const s = decideSettlement(band, e.discovery, e.ctx).site;
     if (!s) break;
+    vistos.push(s);
     registrarAbandono(band, s, e.discovery);
+    if (candidateSites(e.discovery, e.ctx, { exclude: sitiosExcluidos(band, e.discovery) }).length === 0) break;
   }
+  assert.equal(candidateSites(e.discovery, e.ctx, { exclude: sitiosExcluidos(band, e.discovery) }).length, 0, 'el escenario debe agotar los candidatos');
+  assert.ok(e.discovery.size - band.abandonedSites[0].known < CRECIMIENTO_PARA_REINTENTAR, 'sin terreno nuevo que descubrir');
   const d = decideSettlement(band, e.discovery, e.ctx);
-  assert.equal(d.site, null);
-  assert.equal(d.settle, false);
-  assert.match(d.reason, /abandon|alcanz|descart/i);
+  assert.ok(d.site, 'cuando no queda nada elegible, la exclusión caduca y se vuelve a proponer algo');
+  assert.ok(d.reason.length > 0);
 });
 
 test('un sitio abandonado vuelve a ser elegible cuando lo descubierto ha crecido lo bastante, no antes', () => {
@@ -614,4 +616,145 @@ test('un rechazo no fija sitio', () => {
   assert.equal(r.decision.settle, false);
   assert.equal(band.site, null);
   assert.ok(r.chronicle.length > 0);
+});
+
+// --- Revisión: normalización, razón, disidencia en el límite, crónica ------------------------------
+const siteSolo = (ids, valor = 1) => {
+  const grid = createGrid(25, 25);
+  for (const cell of grid.cells) if (Math.hypot(cell.x - C, cell.y - C) <= 12) for (const id of ids) cell.resources[id] = valor;
+  const rio = grid.at(C + 2, C); rio.biome = 'rio'; rio.river = true;
+  const d = createDiscovery(grid); d.reveal(C, C, 14);
+  return scoreSite(d, C, C, { grid, season: 'verano' });
+};
+
+test('la audacia no infla: en un sitio sin caza ni piedra, el audaz puntúa por debajo del total', () => {
+  const s = siteSolo(['forraje', 'leña'], 1e6);
+  const audaz = npcSiteScore({ traits: { ...NEUTRO, audacia: 1 } }, s);
+  assert.ok(audaz < s.total - 1, `${audaz} vs ${s.total}`);
+});
+
+test('la puntuación personal es una media de los factores: nunca supera el mejor factor del sitio', () => {
+  for (const s of [siteSolo(['caza', 'piedra'], 1e6), sitioRiesgoso(), sitioBueno()]) {
+    const mejor = Math.max(...s.factors.filter((f) => f.weight > 0).map((f) => f.value)) * 100;
+    for (const traits of [{ audacia: 1 }, { cautela: 1, audacia: 1 }, { cautela: 1 }]) {
+      const p = npcSiteScore({ traits: { ...NEUTRO, ...traits } }, s);
+      assert.ok(p <= mejor + 1e-9, `${JSON.stringify(traits)}: ${p} vs mejor factor ${mejor}`);
+    }
+  }
+});
+
+test('una mayoría audaz, sin presión, no acepta un sitio cuyo total no llega al umbral', () => {
+  const e = escena({ recursos: { caza: 30, forraje: 30, leña: 30, piedra: 30 }, pantano: 9 });
+  const band = bandaPolarizada();
+  necesidades(band, { hambre: 0, sed: 0, frio: 0, moral: 100 });
+  const d = decideSettlement(band, e.discovery, e.ctx);
+  assert.equal(d.pressure, 0);
+  assert.ok(d.site.total < acceptanceThreshold(0), `el sitio debe estar por debajo del umbral: ${d.site.total}`);
+  assert.ok(d.consensus.average < acceptanceThreshold(0), `media ${d.consensus.average}`);
+  assert.equal(d.settle, false);
+});
+
+test('la razón de asentarse depende de la media frente al umbral sin presión, no del total del sitio', () => {
+  // sitio rico (total >= 70) visto por una banda muy cauta con presión moderada: la media baja de 70 pero supera el umbral
+  const e = escena({ recursos: { caza: 1e6, forraje: 1e6, leña: 1e6, piedra: 1e6 } });
+  const band = bandaCon([{ age: 50, traits: { cautela: 1 } }, { age: 30, traits: { cautela: 1 } }, { age: 25, traits: { cautela: 1 } }]);
+  necesidades(band, { hambre: 60, sed: 60, frio: 60, moral: 40 });
+  const d = decideSettlement(band, e.discovery, e.ctx);
+  assert.ok(d.site.total >= acceptanceThreshold(0), `total ${d.site.total}`);
+  assert.equal(d.settle, true, `media ${d.consensus.average} umbral ${d.threshold}`);
+  assert.ok(d.consensus.average < acceptanceThreshold(0), `media ${d.consensus.average}`);
+  assert.match(d.reason, /no puede seguir esperando/);
+});
+
+test('un asentamiento en calma no cuenta la historia de la necesidad', () => {
+  const e = escena({ recursos: { caza: 1e6, forraje: 1e6, leña: 1e6, piedra: 1e6 } });
+  const d = decideSettlement(bandaComoda(), e.discovery, e.ctx);
+  assert.equal(d.settle, true);
+  assert.ok(d.consensus.average >= acceptanceThreshold(0));
+  assert.doesNotMatch(d.reason, /no puede seguir esperando|Apremia/);
+});
+
+test('dissentersOf: delta exactamente 20 no es disidencia; 20.01 sí', () => {
+  const votos = [
+    { npcId: 'a', nombre: 'A', score: 50 }, { npcId: 'b', nombre: 'B', score: 10 },
+    { npcId: 'c', nombre: 'C', score: 50.01 }, { npcId: 'd', nombre: 'D', score: 9.99 },
+  ];
+  const d = dissentersOf(votos.slice(0, 2), 30);
+  assert.deepEqual(d, [], 'exactamente 20 en ambos sentidos');
+  const e = dissentersOf(votos, 30);
+  assert.deepEqual(e.map((x) => x.npcId), ['c', 'd']);
+  assert.ok(Math.abs(e[0].delta - 20.01) < 1e-9 && Math.abs(e[1].delta + 20.01) < 1e-9);
+  assert.equal(dissentersOf([{ npcId: 'a', nombre: 'A', score: 45 }], 30)[0], undefined, '15 no es disidencia');
+  assert.equal(dissentersOf([{ npcId: 'a', nombre: 'A', score: 49 }], 30).length, 0, '19 no es disidencia');
+  assert.equal(dissentersOf([{ npcId: 'a', nombre: 'A', score: 52 }], 30).length, 1, '22 sí');
+});
+
+function escenaDisidente() {
+  const e = escena({ recursos: { caza: 30, forraje: 30, leña: 30, piedra: 30 }, pantano: 9 });
+  const band = bandaPolarizada();
+  necesidades(band, { hambre: 100, sed: 100, frio: 100, moral: 0 });
+  band.recentDeaths = 3;
+  return { e, band };
+}
+
+test('la crónica de un rechazo no dice que la banda ignoró a nadie', () => {
+  const e = escena({ recursos: { caza: 30, forraje: 30, leña: 30, piedra: 30 }, pantano: 9 });
+  const band = bandaPolarizada();
+  necesidades(band, { hambre: 0, sed: 0, frio: 0, moral: 100 });
+  const r = considerSettlement(band, e.discovery, e.ctx, INTERVALO_EVALUACION);
+  assert.equal(r.decision.settle, false);
+    assert.ok(!r.chronicle.some((l) => /Nadie la escuchó|Nadie le hizo caso/.test(l)), r.chronicle.join(' / '));
+});
+
+test('si la banda se asienta, la crónica recuerda a quien discrepó', () => {
+  const { e, band } = escenaDisidente();
+  const r = considerSettlement(band, e.discovery, e.ctx, INTERVALO_EVALUACION);
+  assert.equal(r.decision.settle, true);
+  const d = r.decision.consensus.dissenters;
+  assert.ok(d.length > 0);
+  for (const x of d) assert.ok(r.chronicle.some((l) => l.includes(x.nombre)));
+});
+
+test('el mismo rechazo no se repite en la crónica en cada evaluación', () => {
+  const e = escena({ recursos: { caza: 2, forraje: 2, leña: 2, piedra: 2 } });
+  const band = bandaComoda();
+  const lineas = [];
+  for (let tick = 1; tick <= 24 * 8; tick++) {
+    const r = considerSettlement(band, e.discovery, e.ctx, tick);
+    if (r) lineas.push(...r.chronicle);
+  }
+  assert.equal(lineas.length, 1, lineas.join(' / '));
+});
+
+test('si cambia el sitio propuesto, la crónica vuelve a hablar', () => {
+  const e = escena({ recursos: { caza: 8, forraje: 8, leña: 8, piedra: 8 }, rioLargo: true });
+  const band = bandaComoda();
+  const r1 = considerSettlement(band, e.discovery, e.ctx, INTERVALO_EVALUACION);
+  assert.ok(r1.chronicle.length > 0);
+  registrarAbandono(band, r1.decision.site, e.discovery);
+  const r2 = considerSettlement(band, e.discovery, e.ctx, 2 * INTERVALO_EVALUACION);
+  assert.ok(r2.chronicle.length > 0, 'otro sitio propuesto merece otra línea');
+});
+
+test('mientras la banda camina hacia su sitio no vuelve a decidir ni cambia de destino', () => {
+  const { e, band } = escenaDisidente();
+  const r1 = considerSettlement(band, e.discovery, e.ctx, INTERVALO_EVALUACION);
+  assert.equal(r1.decision.settle, true);
+  const destino = { ...band.site };
+  e.discovery.reveal(C, C, 24);
+  for (let tick = INTERVALO_EVALUACION + 1; tick <= 24 * 6; tick++) {
+    assert.equal(considerSettlement(band, e.discovery, e.ctx, tick), null, `tick ${tick}`);
+  }
+  assert.deepEqual(band.site, destino);
+  assert.equal(band.lastEvaluation, INTERVALO_EVALUACION);
+});
+
+test('al abandonar el destino (band.site a null) la banda vuelve a decidir y lo cuenta', () => {
+  const { e, band } = escenaDisidente();
+  const r1 = considerSettlement(band, e.discovery, e.ctx, INTERVALO_EVALUACION);
+  registrarAbandono(band, band.site, e.discovery);
+  band.site = null;
+  const r2 = considerSettlement(band, e.discovery, e.ctx, 2 * INTERVALO_EVALUACION);
+  assert.ok(r2 && r2.chronicle.length > 0);
+  assert.ok(r1.chronicle.length > 0);
 });

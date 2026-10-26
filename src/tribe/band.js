@@ -51,6 +51,7 @@ export function createBand(rng, start, opts = {}) {
     settlement: null,
     lastEvaluation: 0,
     lastEvalPressure: 0,
+    lastDecisionKey: null,
     abandonedSites: [],
     recentDeaths: 0,
     approach: null,
