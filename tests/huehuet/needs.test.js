@@ -7,20 +7,40 @@ import {
   NEEDS, createNeeds, tickNeeds, applyNeed,
 } from '../../src/agents/needs.js';
 import { createNpc, NOMBRES, isElder, isAdult } from '../../src/agents/npc.js';
+import { ambientUses } from './purity.js';
+
+const SEASONS = ['primavera', 'verano', 'otoño', 'invierno'];
+const DIA = { hour: 12, season: 'verano', biome: 'pradera', walking: false, working: false, nearFire: false, sheltered: false };
 
 test('las necesidades nunca salen de 0..100 bajo cualquier secuencia', () => {
   const rng = createRng(1);
-  let needs = createNeeds();
   const biomas = Object.keys(BIOMES);
+  const extremos = () => Object.fromEntries(NEEDS.map(({ id }) => [id, rng.pick([0, 100, rng.int(0, 100)])]));
+  const alcanzados = new Set();
+  let needs = createNeeds(extremos());
   for (let i = 0; i < 20000; i++) {
+    if (i % 500 === 0) {
+      needs = createNeeds(extremos());
+      for (const { id } of NEEDS) {
+        if (needs[id] === 0) alcanzados.add(`${id}:0`);
+        if (needs[id] === 100) alcanzados.add(`${id}:100`);
+      }
+    }
     needs = tickNeeds(needs, {
-      hour: i % 24, season: 'invierno', biome: rng.pick(biomas),
+      hour: i % 24, season: rng.pick(SEASONS), biome: rng.pick(biomas),
       walking: rng.chance(0.5), working: rng.chance(0.5),
       nearFire: rng.chance(0.3), sheltered: rng.chance(0.3),
     });
     for (const { id } of NEEDS) {
       assert.ok(needs[id] >= 0 && needs[id] <= 100, `${id} = ${needs[id]}`);
+      if (needs[id] === 0) alcanzados.add(`${id}:0`);
+      if (needs[id] === 100) alcanzados.add(`${id}:100`);
     }
+  }
+  // La prueba debe llegar a ambos extremos de cada necesidad, no vagar por el centro.
+  for (const { id } of NEEDS) {
+    assert.ok(alcanzados.has(`${id}:0`), `${id} nunca llegó a 0`);
+    assert.ok(alcanzados.has(`${id}:100`), `${id} nunca llegó a 100`);
   }
 });
 
@@ -116,11 +136,93 @@ test('los rasgos de un NPC se reparten entre semillas y no son todos iguales', (
   assert.ok(rasgos.size > 1);
 });
 
+// Cobertura de cada cota: cada una debe fallar si se retira sola.
+
+test('fatiga no baja de 0 al dormir con fatiga baja', () => {
+  const durmiendo = { hour: 1, season: 'verano', biome: 'pradera', walking: false, working: false, nearFire: false, sheltered: true };
+  assert.equal(tickNeeds(createNeeds({ fatiga: 3 }), durmiendo).fatiga, 0);
+});
+
+test('moral no supera 100 a cubierto, junto al fuego y bien alimentado', () => {
+  const comodo = { hour: 12, season: 'verano', biome: 'pradera', walking: false, working: false, nearFire: true, sheltered: true };
+  assert.equal(tickNeeds(createNeeds({ moral: 99.9 }), comodo).moral, 100);
+});
+
+test('tickNeeds restablece el rango desde entradas fuera de rango, en ambos sentidos', () => {
+  const ctx = { hour: 1, season: 'verano', biome: 'montaña', walking: false, working: false, nearFire: true, sheltered: true };
+  for (const { id } of NEEDS) {
+    for (const valor of [-50, 150]) {
+      const entrada = { ...createNeeds(), [id]: valor };
+      const salida = tickNeeds(entrada, ctx)[id];
+      assert.ok(salida >= 0 && salida <= 100, `${id} desde ${valor} dio ${salida}`);
+    }
+  }
+});
+
+// Constantes que el jugador ve o que las pruebas de otras tareas dan por hechas.
+
+test('los ids de las necesidades son exactamente los del contrato', () => {
+  assert.deepEqual(NEEDS.map((n) => n.id), ['hambre', 'sed', 'frio', 'fatiga', 'moral']);
+});
+
+test('las etiquetas de las necesidades están en español, con tilde en Frío', () => {
+  assert.deepEqual(NEEDS.map((n) => n.label), ['Hambre', 'Sed', 'Frío', 'Fatiga', 'Moral']);
+});
+
+test('las cuatro estaciones existen con sus claves exactas y pesan el frío como se espera', () => {
+  // Frío de partida 50, mediodía, pradera (refugio 0.1), sin fuego ni refugio: 50 + estación - 1 - 0.2.
+  const esperado = { primavera: 48.8, verano: 46.8, otoño: 49.8, invierno: 51.8 };
+  for (const season of SEASONS) {
+    const frio = tickNeeds(createNeeds({ frio: 50 }), { ...DIA, season }).frio;
+    assert.ok(Math.abs(frio - esperado[season]) < 1e-9, `${season}: ${frio}`);
+  }
+});
+
+test('la noche empieza a las 20 y termina a las 6', () => {
+  // Invierno, frío de partida 50, pradera: de noche +2 frente a -1 de día.
+  const frioA = (hour) => tickNeeds(createNeeds({ frio: 50 }), { ...DIA, season: 'invierno', hour }).frio;
+  assert.ok(Math.abs(frioA(19) - 51.8) < 1e-9, 'a las 19 es de día');
+  assert.ok(Math.abs(frioA(20) - 54.8) < 1e-9, 'a las 20 es de noche');
+  assert.ok(Math.abs(frioA(5) - 54.8) < 1e-9, 'a las 5 es de noche');
+  assert.ok(Math.abs(frioA(6) - 51.8) < 1e-9, 'a las 6 es de día');
+});
+
+test('createNpc consume el mismo flujo de rng con o sin edad explícita', () => {
+  const sin = createNpc(createRng(9));
+  const con = createNpc(createRng(9), { age: 30 });
+  assert.equal(con.nombre, sin.nombre);
+  assert.deepEqual(con.traits, sin.traits);
+  assert.equal(con.age, 30);
+});
+
+// Pureza: el detector se prueba a sí mismo antes de confiar en él.
+
+test('el detector marca APIs ambientales en código real', () => {
+  assert.deepEqual(ambientUses('const t = new Date();'), ['new Date']);
+  assert.deepEqual(ambientUses('const x = Math.random();'), ['Math.random']);
+  assert.deepEqual(ambientUses('const x = Math [ "random" ]();'), ["Math['random']"]);
+  assert.deepEqual(ambientUses("const x = Math['random']();"), ["Math['random']"]);
+  assert.deepEqual(ambientUses('const t = Date.now();'), ['Date.now']);
+  assert.deepEqual(ambientUses('const t = performance.now();'), ['performance.now']);
+  assert.deepEqual(ambientUses('const g = globalThis;'), ['globalThis']);
+  assert.deepEqual(ambientUses('window.open();'), ['window']);
+  assert.deepEqual(ambientUses('document.title = "x";'), ['document']);
+  assert.deepEqual(ambientUses('localStorage.clear();'), ['localStorage']);
+});
+
+test('el detector ve dentro de la interpolación de plantillas', () => {
+  assert.deepEqual(ambientUses('const s = `${Date.now()}`;'), ['Date.now']);
+});
+
+test('el detector ignora comentarios y cadenas', () => {
+  const fuente = '// window document\n/* new Date() Math.random() */ const s = "window"; const t = `document`; const u = \'localStorage\';';
+  assert.deepEqual(ambientUses(fuente), []);
+});
+
 test('src/agents no usa APIs ambientales ni aleatoriedad global', () => {
   const dir = new URL('../../src/agents/', import.meta.url);
-  const prohibidos = ['window', 'document', 'canvas', 'localStorage', 'Date.now', 'Math.random'];
   for (const f of readdirSync(dir).filter((n) => n.endsWith('.js'))) {
-    const fuente = readFileSync(new URL(f, dir), 'utf8');
-    for (const p of prohibidos) assert.ok(!fuente.includes(p), `${f} menciona ${p}`);
+    const hallazgos = ambientUses(readFileSync(new URL(f, dir), 'utf8'));
+    assert.deepEqual(hallazgos, [], `${f} usa ${hallazgos.join(', ')}`);
   }
 });

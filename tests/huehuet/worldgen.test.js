@@ -5,6 +5,7 @@ import { generateWorld, chooseStart } from '../../src/world/worldgen.js';
 import { createRng } from '../../src/core/rng.js';
 import { createGrid, BIOMES } from '../../src/world/grid.js';
 import { RESOURCES } from '../../src/world/resources.js';
+import { ambientUses } from './purity.js';
 
 test('la misma semilla produce un mundo idéntico', () => {
   const a = generateWorld(2024), b = generateWorld(2024);
@@ -197,9 +198,8 @@ test('sin ríos generados, el río central garantiza sitios viables', () => {
 
 test('src/world no usa APIs ambientales ni aleatoriedad global', () => {
   const dir = new URL('../../src/world/', import.meta.url);
-  const prohibidos = ['window', 'document', 'canvas', 'localStorage', 'Date.now', 'Math.random'];
   for (const f of readdirSync(dir).filter((n) => n.endsWith('.js'))) {
-    const fuente = readFileSync(new URL(f, dir), 'utf8');
-    for (const p of prohibidos) assert.ok(!fuente.includes(p), `${f} menciona ${p}`);
+    const hallazgos = ambientUses(readFileSync(new URL(f, dir), 'utf8'));
+    assert.deepEqual(hallazgos, [], `${f} usa ${hallazgos.join(', ')}`);
   }
 });

@@ -26,7 +26,9 @@ const round2 = (value) => Math.round(value * 100) / 100;
 export function createNpc(rng, opts = {}) {
   const id = nextId(rng);
   const nombre = rng.pick(NOMBRES);
-  const age = opts.age ?? rng.int(0, 60);
+  // Se sortea siempre, aunque haya edad explícita, para que el flujo de rng no dependa de las opciones.
+  const edadSorteada = rng.int(0, 60);
+  const age = opts.age ?? edadSorteada;
   const traits = {
     cautela: round2(rng.next()),
     audacia: round2(rng.next()),
