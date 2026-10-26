@@ -2,6 +2,7 @@
 // El mundo se lee solo con discovery (knownCell / isKnown): nada se pisa ni se usa sin haberlo visto.
 // Pura: el azar entra solo por el rng que recibe tickBand; no hay reloj ni estado global.
 import { RESOURCES } from '../world/resources.js';
+import { BIOMES } from '../world/grid.js';
 import { tickNeeds } from '../agents/needs.js';
 import { createNpc } from '../agents/npc.js';
 import { ACTIONS } from '../agents/actions.js';
@@ -12,6 +13,8 @@ const TAMAÑO_POR_DEFECTO = 7;
 // Cifras de balance (inventadas en la Etapa 1, a afinar jugando).
 export const TICKS_HASTA_MORIR = 24; // un día entero con una necesidad vital en 100
 const TICKS_POR_PASO = 6;            // un nómada avanza una celda cada 6 ticks
+export const INTENTOS_SIN_AVANCE = 8;  // pasos seguidos sin acercarse al sitio antes de rendirse (~2 días)
+const REFUGIO_MINIMO = 0.5;          // biomas con shelter por encima de esto dan cobijo (bosque, montaña)
 const RADIO_VISTA_BANDA = 4;         // lo que ve la banda al llegar a una celda
 const DESVANECER_MUERTES = 1 / 72;   // las muertes recientes pesan menos con el paso de ~3 días
 const MUERTES_QUE_SATURAN = 3;
@@ -47,6 +50,7 @@ export function createBand(rng, start, opts = {}) {
     settlement: null,
     lastEvaluation: 0,
     recentDeaths: 0,
+    approach: null,
   };
 }
 
@@ -80,31 +84,49 @@ const esFrontera = (ctx, x, y) => VECINOS.some(([dx, dy]) =>
 
 // Búsqueda en anchura por celdas transitables hasta la más cercana que cumpla `esMeta`.
 // Termina siempre: cada celda se visita una vez y solo hay tantas como celdas descubiertas.
-// Devuelve el primer paso {x, y} del camino más corto, o null si ya está en la meta o no hay camino.
+// Devuelve el primer paso {x, y, largo} del camino más corto (largo = celdas hasta la meta), o null si no hay camino.
 function primerPaso(ctx, desde, esMeta) {
   const clave = (x, y) => `${x},${y}`;
   const visitadas = new Set([clave(desde.x, desde.y)]);
-  let cola = VECINOS.map(([dx, dy]) => ({ x: desde.x + dx, y: desde.y + dy, paso: null }));
-  cola.forEach((n) => { n.paso = { x: n.x, y: n.y }; });
+  const cola = VECINOS.map(([dx, dy]) => ({ x: desde.x + dx, y: desde.y + dy, paso: { x: desde.x + dx, y: desde.y + dy }, largo: 1 }));
   for (let i = 0; i < cola.length; i++) {
     const nodo = cola[i];
     const k = clave(nodo.x, nodo.y);
     if (visitadas.has(k) || !transitable(ctx, nodo.x, nodo.y)) continue;
     visitadas.add(k);
-    if (esMeta(nodo.x, nodo.y)) return nodo.paso;
-    for (const [dx, dy] of VECINOS) cola.push({ x: nodo.x + dx, y: nodo.y + dy, paso: nodo.paso });
+    if (esMeta(nodo.x, nodo.y)) return { ...nodo.paso, largo: nodo.largo };
+    for (const [dx, dy] of VECINOS) cola.push({ x: nodo.x + dx, y: nodo.y + dy, paso: nodo.paso, largo: nodo.largo + 1 });
   }
   return null;
 }
 
+// Hacia band.site. Si en INTENTOS_SIN_AVANCE pasos seguidos no se acorta el camino (o no hay camino), se rinde:
+// suelta el sitio, vuelve a explorar la frontera y lo anota en la crónica.
+function pasoHaciaSitio(band, ctx, cronica) {
+  const { x, y } = band.site;
+  if (band.x === x && band.y === y) { band.approach = null; return null; }
+  if (band.approach?.x !== x || band.approach?.y !== y) band.approach = { x, y, mejor: Infinity, sinAvance: 0 };
+  const paso = primerPaso(ctx, band, (cx, cy) => cx === x && cy === y);
+  const enfoque = band.approach;
+  if (paso && paso.largo < enfoque.mejor) {
+    enfoque.mejor = paso.largo;
+    enfoque.sinAvance = 0;
+    return paso;
+  }
+  enfoque.sinAvance++;
+  if (enfoque.sinAvance < INTENTOS_SIN_AVANCE) return paso;
+  band.site = null;
+  band.approach = null;
+  cronica.push(`La banda no logra llegar al lugar elegido (${x}, ${y}) y vuelve a explorar.`);
+  return null;
+}
+
 // Mueve la banda una celda si toca. Devuelve true si se movió. Asentada, no se mueve nunca.
-function migrar(band, ctx) {
+function migrar(band, ctx, cronica) {
   if (band.settled || ctx.clock.tick % TICKS_POR_PASO !== 0) return false;
   ctx.discovery.reveal(band.x, band.y, RADIO_VISTA_BANDA);
-  const meta = band.site
-    ? (x, y) => x === band.site.x && y === band.site.y
-    : (x, y) => esFrontera(ctx, x, y);
-  const paso = primerPaso(ctx, band, meta);
+  let paso = band.site ? pasoHaciaSitio(band, ctx, cronica) : null;
+  if (!band.site) paso = primerPaso(ctx, band, (x, y) => esFrontera(ctx, x, y));
   if (!paso) return false;
   band.x = paso.x;
   band.y = paso.y;
@@ -134,7 +156,7 @@ function tickNpc(npc, band, ctx, rng, actions, seMovio, cronica) {
     walking: seMovio || CAMINATAS.includes(npc.action),
     working: TRABAJOS.includes(npc.action),
     nearFire: false,
-    sheltered: false,
+    sheltered: (BIOMES[celda?.biome]?.shelter ?? 0) > REFUGIO_MINIMO,
   });
   const causa = saturar(npc);
   if (causa) {
@@ -154,7 +176,7 @@ function tickNpc(npc, band, ctx, rng, actions, seMovio, cronica) {
 export function tickBand(band, ctx, rng, actions = ACTIONS) {
   if (isExtinct(band)) return [];
   const cronica = [];
-  const seMovio = migrar(band, ctx);
+  const seMovio = migrar(band, ctx, cronica);
   for (const npc of livingNpcs(band)) tickNpc(npc, band, ctx, rng, actions, seMovio, cronica);
   band.recentDeaths = Math.max(0, (band.recentDeaths ?? 0) - DESVANECER_MUERTES);
   return cronica;

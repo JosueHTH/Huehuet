@@ -3,15 +3,15 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { createRng } from '../../src/core/rng.js';
 import { createClock } from '../../src/core/clock.js';
-import { createGrid } from '../../src/world/grid.js';
+import { createGrid, BIOMES } from '../../src/world/grid.js';
 import { RESOURCES } from '../../src/world/resources.js';
 import { createDiscovery } from '../../src/world/discovery.js';
 import { generateWorld } from '../../src/world/worldgen.js';
-import { NEEDS } from '../../src/agents/needs.js';
+import { NEEDS, tickNeeds } from '../../src/agents/needs.js';
 import { isElder, isAdult } from '../../src/agents/npc.js';
 import { IDLE } from '../../src/agents/utility.js';
 import {
-  createBand, tickBand, bandPressure, isExtinct, livingNpcs, TICKS_HASTA_MORIR,
+  createBand, tickBand, bandPressure, isExtinct, livingNpcs, TICKS_HASTA_MORIR, INTENTOS_SIN_AVANCE,
 } from '../../src/tribe/band.js';
 import { ambientUses } from './purity.js';
 
@@ -307,7 +307,6 @@ test('un sitio fuera de la rejilla no arrastra a la banda fuera', () => {
     tickBand(band, ctx, createRng(i));
     assert.ok(ctx.grid.inBounds(band.x, band.y));
   }
-  assert.deepEqual([band.x, band.y], [20, 20]);
 });
 
 test('el borde de la rejilla no cuenta como frontera: con todo descubierto, la banda del borde no se mueve', () => {
@@ -410,9 +409,84 @@ test('el nómada avanza como mucho una celda cada pocos ticks con un reloj que c
 test('un sitio en terreno sin descubrir es inalcanzable: la banda no pisa lo que no ha visto', () => {
   const { band, ctx } = escenaBanda({ reveal: 5 });
   band.site = { x: 30, y: 20 };
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < INTENTOS_SIN_AVANCE - 1; i++) { // antes de rendirse
     tickBand(band, ctx, createRng(i), []); // sin acciones: nadie explora
     assert.ok(ctx.discovery.isKnown(band.x, band.y));
   }
   assert.deepEqual([band.x, band.y], [20, 20]);
+});
+
+// --- Refugio por bioma ---
+
+test('sheltered sale del bioma: en bosque el frío sube menos que en tundra, exactamente como con refugio', () => {
+  const frioTrasUnTick = (biome) => {
+    const { band, ctx, grid } = escenaBanda({ hour: 2, size: 2 });
+    for (const celda of grid.cells) celda.biome = biome;
+    const npc = band.npcs[0];
+    npc.action = null;
+    npc.needs.frio = 50;
+    const previas = { ...npc.needs };
+    tickBand(band, ctx, createRng(1), []);
+    return { real: npc.needs.frio, previas };
+  };
+  const ctxNeeds = (biome, sheltered) => ({ hour: 2, season: 'primavera', biome, walking: false, working: false, nearFire: false, sheltered });
+  const bosque = frioTrasUnTick('bosque');
+  const tundra = frioTrasUnTick('tundra');
+  assert.equal(bosque.real, tickNeeds(bosque.previas, ctxNeeds('bosque', true)).frio);
+  assert.equal(tundra.real, tickNeeds(tundra.previas, ctxNeeds('tundra', false)).frio);
+  assert.ok(bosque.real < tundra.real);
+  // Una colina (shelter 0.4) no alcanza el umbral de refugio.
+  const colina = frioTrasUnTick('colina');
+  assert.equal(colina.real, tickNeeds(colina.previas, ctxNeeds('colina', false)).frio);
+});
+
+// --- Sitio inalcanzable ---
+
+function correrConReloj(band, ctx, ticks) {
+  ctx.clock = createClock({ tick: 1, msPerTick: 1 });
+  const cronica = [];
+  for (let i = 0; i < ticks; i++) {
+    for (const n of livingNpcs(band)) { n.needs.hambre = 0; n.needs.sed = 0; n.needs.frio = 0; } // sin muertes por hambre
+    cronica.push(...tickBand(band, ctx, createRng(i), []));
+    ctx.clock.advance(1, 1);
+  }
+  return cronica;
+}
+
+test('un sitio inalcanzable se abandona: la banda lo anota en la crónica y vuelve a explorar', () => {
+  const { band, ctx } = escenaBanda({ reveal: 6 });
+  band.site = { x: 35, y: 20 }; // sin descubrir: no hay camino
+  const cronica = correrConReloj(band, ctx, 300);
+  const lineas = cronica.filter((t) => t.includes('no logra llegar'));
+  assert.equal(lineas.length, 1);
+  assert.equal(band.site, null);
+  assert.ok(ctx.discovery.size > 200, 'retomó la exploración de la frontera');
+  assert.ok(Math.max(Math.abs(band.x - 20), Math.abs(band.y - 20)) >= 5);
+});
+
+test('un sitio al otro lado de agua que no se puede rodear se abandona', () => {
+  const { band, ctx, grid } = escenaBanda({ reveal: 15 });
+  for (const celda of grid.cells) if (celda.x === 24) celda.biome = 'agua'; // muro de lado a lado
+  band.site = { x: 28, y: 20 };
+  const cronica = correrConReloj(band, ctx, 200);
+  assert.equal(cronica.filter((t) => t.includes('no logra llegar')).length, 1);
+  assert.equal(band.site, null);
+});
+
+test('un sitio alcanzable no se abandona aunque exija un rodeo largo que aleja de él', () => {
+  const { band, ctx, grid } = escenaBanda({ reveal: 30 });
+  for (const celda of grid.cells) if (celda.x === 24 && celda.y >= 2 && celda.y <= 37) celda.biome = 'agua';
+  band.site = { x: 28, y: 20 }; // el rodeo sube hasta y=1: ~19 celdas de distancia en línea recta
+  const cronica = correrConReloj(band, ctx, 900);
+  assert.deepEqual(cronica.filter((t) => t.includes('no logra llegar')), []);
+  assert.deepEqual([band.x, band.y], [28, 20]);
+  assert.deepEqual(band.site, { x: 28, y: 20 });
+});
+
+test('una banda llegada a su sitio no se rinde por quedarse quieta', () => {
+  const { band, ctx } = escenaBanda({ reveal: 15 });
+  band.site = { x: 22, y: 20 };
+  const cronica = correrConReloj(band, ctx, 300);
+  assert.deepEqual(cronica.filter((t) => t.includes('no logra llegar')), []);
+  assert.deepEqual([band.x, band.y], [22, 20]);
 });
