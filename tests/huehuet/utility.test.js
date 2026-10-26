@@ -38,7 +38,7 @@ function escenaJunto(biome, needs = {}, clock = {}) {
   const discovery = createDiscovery(grid);
   discovery.reveal(16, 16, 5);
   const npc = npcCon({}, needs);
-  const band = { members: [npc], inventory: {} };
+  const band = { npcs: [npc], inventory: {}, x: 16, y: 16, settled: false, site: null, lastEvaluation: 0 };
   const ctx = { grid, discovery, clock: createClock({ tick: clock.hour ?? 12 }) };
   return { npc, band, ctx };
 }
@@ -154,7 +154,7 @@ test('el agua junto al NPC pero nunca descubierta no cuenta', () => {
   grid.at(17, 16).resources.agua = 10;
   const discovery = createDiscovery(grid); // no se revela nada
   const npc = npcCon({}, { sed: 100 });
-  const band = { members: [npc], inventory: {} };
+  const band = { npcs: [npc], inventory: {}, x: 16, y: 16, settled: false, site: null, lastEvaluation: 0 };
   const ctx = { grid, discovery, clock: createClock({ tick: 12 }) };
   assert.equal(accion('beber').score(npc, band, ctx), 0);
   assert.ok(accion('beber').apply(npc, band, ctx, createRng(1)) === null);
@@ -171,7 +171,7 @@ test('sin recursos a su alcance las acciones de recolección puntúan 0', () => 
   }
 });
 
-test('seguir y construir puntúan 0 cuando no hay a quién seguir ni con qué construir', () => {
+test('seguir y construir puntúan 0 si el NPC ya está en la banda y no hay obra', () => {
   const { npc, band, ctx } = escenaJunto('bosque', { frio: 100 });
   assert.equal(accion('seguir').score(npc, band, ctx), 0);
   assert.equal(accion('construir').score(npc, band, ctx), 0);
@@ -269,29 +269,61 @@ test('explorar cuenta un hallazgo grande en la crónica', () => {
   assert.ok(texto.includes(npc.nombre));
 });
 
-test('seguir acerca al NPC al líder de la banda', () => {
+test('seguir acerca al NPC al punto de la banda y puntúa por la distancia a él', () => {
   const { npc, band, ctx } = escenaJunto('pradera', {});
-  const lider = npcCon({});
-  lider.x = 16;
-  lider.y = 16;
-  npc.x = 20;
+  band.x = 10;
+  band.y = 16;
+  npc.x = 14;
+  npc.y = 18;
+  const seguir = accion('seguir');
+  const lejos = seguir.score(npc, band, ctx);
+  assert.ok(lejos > 0);
+  seguir.apply(npc, band, ctx, createRng(1));
+  assert.equal(npc.x, 13);
+  assert.equal(npc.y, 17);
+  assert.ok(seguir.score(npc, band, ctx) < lejos);
+  npc.x = 10;
   npc.y = 16;
-  band.members = [lider, npc];
-  assert.ok(accion('seguir').score(npc, band, ctx) > 0);
-  assert.equal(accion('seguir').score(lider, band, ctx), 0);
-  accion('seguir').apply(npc, band, ctx, createRng(1));
-  assert.equal(npc.x, 19);
-  assert.equal(npc.y, 16);
+  assert.equal(seguir.score(npc, band, ctx), 0);
 });
 
-test('construir gasta leña de la banda y levanta una fogata, con crónica', () => {
+const asentada = (band, cola = ['hoguera']) => {
+  band.settled = true;
+  band.settlement = { queue: cola, buildings: [] };
+};
+
+test('construir puntúa 0 mientras la banda es nómada o no hay obra pendiente', () => {
   const { npc, band, ctx } = escenaJunto('bosque', { frio: 80 });
-  band.inventory.leña = 7;
+  band.inventory.leña = 50;
+  const construir = accion('construir');
+  assert.equal(construir.score(npc, band, ctx), 0); // nómada
+  band.settlement = { queue: ['hoguera'], buildings: [] };
+  assert.equal(construir.score(npc, band, ctx), 0); // hay obra pero la banda no está asentada
+  asentada(band, []);
+  assert.equal(construir.score(npc, band, ctx), 0); // asentada sin obra
+  band.settlement = null;
+  assert.equal(construir.score(npc, band, ctx), 0); // sin asentamiento
+  delete band.settlement;
+  assert.equal(construir.score(npc, band, ctx), 0);
+});
+
+test('construir puntúa más de 0 con la banda asentada y obra pendiente, y puede ganar', () => {
+  const { npc, band, ctx } = escenaJunto('pradera', {});
+  asentada(band);
   assert.ok(accion('construir').score(npc, band, ctx) > 0);
+});
+
+test('construir solo anota que el NPC trabaja: no toca inventario, obra ni contadores', () => {
+  const { npc, band, ctx } = escenaJunto('bosque', {});
+  asentada(band);
+  band.inventory.leña = 9;
+  const sinNpcs = () => JSON.stringify({ ...band, npcs: undefined, needs: npc.needs });
+  const antes = sinNpcs();
   const texto = accion('construir').apply(npc, band, ctx, createRng(1));
-  assert.equal(typeof texto, 'string');
-  assert.equal(band.inventory.leña, 2);
-  assert.equal(band.fogatas, 1);
+  assert.equal(texto, null);
+  assert.equal(sinNpcs(), antes);
+  assert.equal(band.fogatas, undefined);
+  assert.equal(npc.action, 'construir');
 });
 
 test('las acciones solo usan la rejilla a través de discovery.knownCell', () => {

@@ -9,7 +9,6 @@ import { consume } from '../world/resources.js';
 // Pesos de balance (inventados en la Etapa 1, a afinar jugando): puntuación máxima de cada acción.
 const PESO = { beber: 100, forrajear: 80, cazar: 90, talar: 40, piedra: 20, descansar: 100, explorar: 25, seguir: 30, construir: 35 };
 
-const LENA_POR_FOGATA = 5;
 const ALCANCE = 1; // radio en celdas (Chebyshev) en el que un NPC alcanza un recurso
 
 const urgencia = (valor) => (valor / 100) ** 2;
@@ -32,15 +31,12 @@ function mejorCelda(npc, ctx, resourceId) {
 const disponibilidad = (npc, ctx, resourceId, suficiente) =>
   Math.min(1, (mejorCelda(npc, ctx, resourceId)?.resources[resourceId] ?? 0) / suficiente);
 
-// El líder es el primer miembro vivo de la banda; null si el NPC lo es o va solo.
-const lider = (npc, band) => {
-  const primero = band.members.find((m) => m.alive !== false);
-  return primero && primero !== npc ? primero : null;
-};
-const distanciaAlLider = (npc, band) => {
-  const l = lider(npc, band);
-  return l ? Math.max(Math.abs(l.x - npc.x), Math.abs(l.y - npc.y)) : 0;
-};
+// Distancia (Chebyshev) del NPC al punto de la banda; los NPCs orbitan ese punto.
+const distanciaALaBanda = (npc, band) => Math.max(Math.abs(band.x - npc.x), Math.abs(band.y - npc.y));
+
+// Hay obra pendiente solo con la banda asentada y un asentamiento con cola de construcción.
+// Task 7 no declara `band.settlement`; quien cree el asentamiento (Tasks 10/11) debe colgarlo ahí.
+const hayObra = (band) => band.settled === true && (band.settlement?.queue?.length ?? 0) > 0;
 
 // Toma del recurso lo que haya a su alcance; devuelve lo obtenido (0 si no hay nada).
 function tomar(npc, ctx, resourceId, cantidad) {
@@ -132,26 +128,24 @@ export const ACTIONS = [
   },
   {
     id: 'seguir',
-    label: 'Seguir a la banda',
-    score: (npc, band) => PESO.seguir * Math.min(1, distanciaAlLider(npc, band) / 8) * (0.5 + 0.5 * npc.traits.cautela),
+    label: 'Volver con la banda',
+    score: (npc, band) => PESO.seguir * Math.min(1, distanciaALaBanda(npc, band) / 8) * (0.5 + 0.5 * npc.traits.cautela),
     apply(npc, band) {
-      const l = lider(npc, band);
-      if (!l) return null;
-      npc.x += Math.sign(l.x - npc.x);
-      npc.y += Math.sign(l.y - npc.y);
+      npc.x += Math.sign(band.x - npc.x);
+      npc.y += Math.sign(band.y - npc.y);
       return null;
     },
   },
   {
     id: 'construir',
-    label: 'Construir fogata',
-    score: (npc, band) => (inventario(band, 'leña') >= LENA_POR_FOGATA ? PESO.construir * (0.2 + urgencia(npc.needs.frio)) : 0),
-    apply(npc, band) {
-      if (inventario(band, 'leña') < LENA_POR_FOGATA) return null;
-      band.inventory.leña -= LENA_POR_FOGATA;
-      band.fogatas = (band.fogatas ?? 0) + 1;
-      return `${npc.nombre} encendió una fogata para la banda.`;
+    label: 'Trabajar en la obra',
+    // Costura con Task 10: esta acción NO construye nada. Solo marca que el NPC dedica el tick a la obra
+    // (npc.action = 'construir'). Task 10 cuenta cuántos NPCs la eligieron en el tick y lo convierte en
+    // progreso con tickConstruction; el inventario y los edificios son suyos, nunca de aquí.
+    score: (npc, band) => (hayObra(band) ? PESO.construir * (0.2 + urgencia(npc.needs.frio)) : 0),
+    apply(npc) {
+      npc.action = 'construir';
+      return null;
     },
   },
 ];
-
