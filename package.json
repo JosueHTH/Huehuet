@@ -1,0 +1,8 @@
+{
+  "name": "huehuet",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/huehuet/*.test.js"
+  }
+}
