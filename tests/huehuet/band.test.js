@@ -471,6 +471,8 @@ test('un sitio al otro lado de agua que no se puede rodear se abandona', () => {
   const cronica = correrConReloj(band, ctx, 200);
   assert.equal(cronica.filter((t) => t.includes('no logra llegar')).length, 1);
   assert.equal(band.site, null);
+  assert.deepEqual(band.abandonedSites, [{ x: 28, y: 20, known: band.abandonedSites[0].known }]);
+  assert.ok(band.abandonedSites[0].known > 0 && band.abandonedSites[0].known <= ctx.discovery.size, 'recuerda lo descubierto al abandonar');
 });
 
 test('un sitio alcanzable no se abandona aunque exija un rodeo largo que aleja de él', () => {

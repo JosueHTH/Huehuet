@@ -9,6 +9,7 @@ import { ACTIONS } from '../agents/actions.js';
 import { chooseAction, IDLE } from '../agents/utility.js';
 
 const TAMAÑO_POR_DEFECTO = 7;
+const MEMORIA_MAXIMA = 32;           // sitios abandonados que la banda recuerda
 
 // Cifras de balance (inventadas en la Etapa 1, a afinar jugando).
 export const TICKS_HASTA_MORIR = 24; // un día entero con una necesidad vital en 100
@@ -49,6 +50,8 @@ export function createBand(rng, start, opts = {}) {
     site: null,
     settlement: null,
     lastEvaluation: 0,
+    lastEvalPressure: 0,
+    abandonedSites: [],
     recentDeaths: 0,
     approach: null,
   };
@@ -100,6 +103,12 @@ function primerPaso(ctx, desde, esMeta) {
   return null;
 }
 
+// Anota un sitio inalcanzable junto con lo descubierto en ese momento. Conserva solo los MEMORIA_MAXIMA más recientes.
+// consensus.js lo usa para excluir un radio alrededor de cada uno.
+export function registrarAbandono(band, site, discovery) {
+  band.abandonedSites = [...(band.abandonedSites ?? []), { x: site.x, y: site.y, known: discovery.size }].slice(-MEMORIA_MAXIMA);
+}
+
 // Hacia band.site. Si en INTENTOS_SIN_AVANCE pasos seguidos no se acorta el camino (o no hay camino), se rinde:
 // suelta el sitio, vuelve a explorar la frontera y lo anota en la crónica.
 function pasoHaciaSitio(band, ctx, cronica) {
@@ -115,6 +124,7 @@ function pasoHaciaSitio(band, ctx, cronica) {
   }
   enfoque.sinAvance++;
   if (enfoque.sinAvance < INTENTOS_SIN_AVANCE) return paso;
+  registrarAbandono(band, { x, y }, ctx.discovery);
   band.site = null;
   band.approach = null;
   cronica.push(`La banda no logra llegar al lugar elegido (${x}, ${y}) y vuelve a explorar.`);
