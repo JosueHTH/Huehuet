@@ -9,7 +9,8 @@ import { createDiscovery } from '../../src/world/discovery.js';
 import { createNpc } from '../../src/agents/npc.js';
 import { createNeeds } from '../../src/agents/needs.js';
 import { ACTIONS } from '../../src/agents/actions.js';
-import { chooseAction } from '../../src/agents/utility.js';
+import { chooseAction, IDLE } from '../../src/agents/utility.js';
+import { codeOnly } from './purity.js';
 
 // Recursos que la celda central lleva de serie según su bioma (a tope, como un lugar sin explotar).
 const RECURSOS_DE = {
@@ -111,14 +112,34 @@ test('chooseAction elige la mayor puntuación y, en empate, la primera del catá
   assert.equal(chooseAction(npc, band, ctx, [fija('a', 1), fija('b', 9), fija('c', 3)]).id, 'b');
   assert.equal(chooseAction(npc, band, ctx, [fija('a', 5), fija('b', 5), fija('c', 5)]).id, 'a');
   assert.equal(chooseAction(npc, band, ctx, [fija('a', 2), fija('b', 7), fija('c', 7)]).id, 'b');
-  assert.equal(chooseAction(npc, band, ctx, [fija('a', 0), fija('b', 0)]).id, 'a');
+  assert.equal(chooseAction(npc, band, ctx, [fija('a', 0.5), fija('b', 0)]).id, 'a');
 });
 
-test('chooseAction no consume el rng ni modifica al NPC', () => {
+test('chooseAction es una lectura pura: no modifica NPC, banda, rejilla ni descubrimiento (y no recibe rng)', () => {
   const { npc, band, ctx } = escenaJunto('rio', { sed: 80 });
-  const antes = JSON.stringify([npc, band]);
+  const foto = () => JSON.stringify([npc, band, ctx.grid.cells, ctx.discovery.toJSON()]);
+  const antes = foto();
   chooseAction(npc, band, ctx);
-  assert.equal(JSON.stringify([npc, band]), antes);
+  assert.equal(foto(), antes);
+  assert.equal(chooseAction.length <= 4, true); // sin parámetro de rng: el desempate no puede usar azar
+});
+
+test('chooseAction distingue "nada es viable": devuelve IDLE cuando todo puntúa 0', () => {
+  const { npc, band, ctx } = escenaJunto('pradera', {});
+  const cero = { id: 'a', label: 'a', score: () => 0, apply: () => null };
+  assert.equal(chooseAction(npc, band, ctx, [cero, { ...cero, id: 'b' }]), IDLE);
+  assert.equal(chooseAction(npc, band, ctx, []), IDLE);
+  assert.equal(IDLE.score(npc, band, ctx), 0);
+  assert.equal(IDLE.apply(npc, band, ctx, createRng(1)), null);
+  assert.ok(!ACTIONS.includes(IDLE));
+});
+
+test('nunca cae en IDLE por azar: con cualquier combinación de necesidades y sin recursos, algo puntúa', () => {
+  for (const v of [0, 20, 60, 100]) {
+    const { npc, band, ctx } = escenaJunto('colina', { hambre: v, sed: v, frio: v, fatiga: v });
+    ctx.grid.at(16, 16).resources.piedra = 0;
+    assert.notEqual(chooseAction(npc, band, ctx), IDLE, `necesidades en ${v}`);
+  }
 });
 
 test('la urgencia crece más que linealmente: sed 90 puntúa más del doble que sed 45', () => {
@@ -326,7 +347,47 @@ test('construir solo anota que el NPC trabaja: no toca inventario, obra ni conta
   assert.equal(npc.action, 'construir');
 });
 
-test('las acciones solo usan la rejilla a través de discovery.knownCell', () => {
-  const fuente = readFileSync(new URL('../../src/agents/actions.js', import.meta.url), 'utf8');
-  assert.ok(!/\.at\s*\(/.test(fuente), 'actions.js no debe llamar a grid.at');
+test('un NPC saturado sin agua ni comida a su alcance sale a explorar y no se queda quieto', () => {
+  for (const necesidades of [{ sed: 100 }, { hambre: 100 }, { sed: 100, hambre: 100, frio: 100, fatiga: 50 }]) {
+    const { npc, band, ctx } = escenaJunto('colina', necesidades);
+    ctx.grid.at(16, 16).resources.piedra = 0;
+    const accionElegida = chooseAction(npc, band, ctx);
+    assert.equal(accionElegida.id, 'explorar', JSON.stringify(necesidades));
+    const antes = { x: npc.x, y: npc.y, conocidas: ctx.discovery.size };
+    accionElegida.apply(npc, band, ctx, createRng(1));
+    assert.ok(npc.x !== antes.x || npc.y !== antes.y);
+    assert.ok(ctx.discovery.size > antes.conocidas);
+  }
+});
+
+test('la acción elegida con sed 100 y sin agua nunca es un apply sin efecto', () => {
+  const { npc, band, ctx } = escenaJunto('pradera', { sed: 100, fatiga: 0 });
+  ctx.grid.at(16, 16).resources.forraje = 0;
+  ctx.grid.at(16, 16).resources.caza = 0;
+  const elegida = chooseAction(npc, band, ctx);
+  const foto = () => JSON.stringify([npc, band, ctx.discovery.toJSON()]);
+  const antes = foto();
+  elegida.apply(npc, band, ctx, createRng(1));
+  assert.notEqual(foto(), antes, `${elegida.id} no hizo nada`);
+});
+
+test('la urgencia reduce el peso de explorar pero nunca lo anula: puntúa > 0 con una necesidad en 100', () => {
+  for (const id of ['hambre', 'sed', 'frio', 'fatiga']) {
+    const { npc, band, ctx } = escenaJunto('bosque', { [id]: 100 });
+    ctx.grid.at(16, 16).resources.agua = RESOURCES.agua.max; // todo a su alcance: sin término de desesperación
+    assert.ok(accion('explorar').score(npc, band, ctx) > 0, id);
+  }
+});
+
+test('explorar sube cuando una necesidad alta no tiene con qué satisfacerse', () => {
+  const con = escenaJunto('rio', { sed: 90 });
+  const sin = escenaJunto('pradera', { sed: 90 });
+  assert.ok(accion('explorar').score(sin.npc, sin.band, sin.ctx) > accion('explorar').score(con.npc, con.band, con.ctx));
+});
+
+test('las acciones solo leen el mundo con discovery.knownCell: ni grid.at ni grid.cells ni indexar la rejilla', () => {
+  const fuente = codeOnly(readFileSync(new URL('../../src/agents/actions.js', import.meta.url), 'utf8'));
+  assert.ok(!/\.at\s*\(/.test(fuente), 'no debe llamar a .at(');
+  assert.ok(!/\bcells\b/.test(fuente), 'no debe tocar cells');
+  assert.ok(!/\bgrid\b(?!\s*\.\s*inBounds\b)/.test(fuente), 'de grid solo se permite inBounds');
 });

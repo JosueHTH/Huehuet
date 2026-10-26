@@ -7,7 +7,7 @@ import { applyNeed } from './needs.js';
 import { consume } from '../world/resources.js';
 
 // Pesos de balance (inventados en la Etapa 1, a afinar jugando): puntuación máxima de cada acción.
-const PESO = { beber: 100, forrajear: 80, cazar: 90, talar: 40, piedra: 20, descansar: 100, explorar: 25, seguir: 30, construir: 35 };
+const PESO = { beber: 100, forrajear: 80, cazar: 90, talar: 40, piedra: 20, descansar: 100, explorar: 25, seguir: 30, construir: 35, desesperacion: 50 };
 
 const ALCANCE = 1; // radio en celdas (Chebyshev) en el que un NPC alcanza un recurso
 
@@ -26,6 +26,8 @@ function mejorCelda(npc, ctx, resourceId) {
   }
   return mejor;
 }
+
+const alcanzable = (npc, ctx, resourceId) => mejorCelda(npc, ctx, resourceId) !== null;
 
 // 0..1: cuánto del recurso hay a su alcance respecto a `suficiente`.
 const disponibilidad = (npc, ctx, resourceId, suficiente) =>
@@ -114,8 +116,14 @@ export const ACTIONS = [
   {
     id: 'explorar',
     label: 'Explorar',
-    score: (npc) => PESO.explorar * (0.3 + 0.7 * npc.traits.audacia)
-      * (1 - urgencia(Math.max(npc.needs.hambre, npc.needs.sed, npc.needs.frio, npc.needs.fatiga))),
+    // La urgencia resta peso a explorar (hay cosas más importantes) pero nunca lo anula; y cuando una
+    // necesidad alta no tiene con qué satisfacerse a su alcance, explorar es la salida y su peso sube.
+    score: (npc, band, ctx) => PESO.explorar * (0.3 + 0.7 * npc.traits.audacia)
+      * (1 - 0.8 * urgencia(Math.max(npc.needs.hambre, npc.needs.sed, npc.needs.frio, npc.needs.fatiga)))
+      + PESO.desesperacion * Math.max(
+        alcanzable(npc, ctx, 'agua') ? 0 : urgencia(npc.needs.sed),
+        alcanzable(npc, ctx, 'forraje') || alcanzable(npc, ctx, 'caza') ? 0 : urgencia(npc.needs.hambre),
+      ),
     apply(npc, band, ctx, rng) {
       const posibles = DIRECCIONES.filter(([dx, dy]) =>
         ctx.grid.inBounds(npc.x + dx * PASO_EXPLORAR, npc.y + dy * PASO_EXPLORAR));
