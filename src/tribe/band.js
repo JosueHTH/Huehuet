@@ -19,6 +19,7 @@ const REFUGIO_MINIMO = 0.5;          // biomas con shelter por encima de esto da
 const RADIO_VISTA_BANDA = 4;         // lo que ve la banda al llegar a una celda
 const DESVANECER_MUERTES = 1 / 72;   // las muertes recientes pesan menos con el paso de ~3 días
 const MUERTES_QUE_SATURAN = 3;
+export const RADIO_FUEGO = 3;        // celdas (Chebyshev) a las que calienta una hoguera terminada
 const NECESIDADES_VITALES = ['hambre', 'sed', 'frio'];
 const CAUSA = { hambre: 'hambre', sed: 'sed', frio: 'frío' };
 const TRABAJOS = ['construir', 'talar', 'recoger_piedra', 'cazar', 'forrajear'];
@@ -155,6 +156,13 @@ function saturar(npc) {
   return npc.saturacion > TICKS_HASTA_MORIR ? causa : null;
 }
 
+// Calienta solo una hoguera terminada de la aldea (band.settlement es la única fuente). Los NPCs no van pegados
+// a la banda: lo que cuenta es su propia distancia a la hoguera.
+function cercaDelFuego(band, npc) {
+  const fuego = band.settlement?.buildings?.find((b) => b.id === 'hoguera' && b.done);
+  return Boolean(fuego) && Math.max(Math.abs(npc.x - fuego.x), Math.abs(npc.y - fuego.y)) <= RADIO_FUEGO;
+}
+
 // --- Tick ------------------------------------------------------------------------------------
 
 // Un NPC: necesidades, muerte por saturación sostenida, elección y aplicación de una acción.
@@ -166,7 +174,7 @@ function tickNpc(npc, band, ctx, rng, actions, seMovio, cronica) {
     biome: celda?.biome ?? 'pradera',
     walking: seMovio || CAMINATAS.includes(npc.action),
     working: TRABAJOS.includes(npc.action),
-    nearFire: false,
+    nearFire: cercaDelFuego(band, npc),
     sheltered: (BIOMES[celda?.biome]?.shelter ?? 0) > REFUGIO_MINIMO,
   });
   const causa = saturar(npc);
