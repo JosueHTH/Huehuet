@@ -83,3 +83,17 @@ test('tick inicial se respeta y day/season derivan de él', () => {
   assert.equal(clock.hour, 5);
   assert.equal(clock.season, 'verano');
 });
+
+// Review Focus 2: the discard after a clamp must not carry leftover time forward.
+test('advance descarta el tiempo sobrante tras acotar', () => {
+  const clock = createClock();
+  clock.advance(600000, 10);
+  assert.equal(clock.advance(0, 1), 0, 'el sobrante no debe diferirse al siguiente avance');
+});
+
+// Review Focus 3: fork no debe consumir la secuencia del padre.
+test('fork no altera la secuencia del padre', () => {
+  const padre = createRng(42);
+  padre.fork('mundo');
+  assert.equal(padre.next(), createRng(42).next());
+});
