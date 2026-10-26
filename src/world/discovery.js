@@ -1,8 +1,7 @@
 // Discovery: the cells the band has actually seen. The tribe/ modules read the world only through this.
 // Known cells are kept as a Set of flat indices (y * width + x), so toJSON is a compact array of integers.
 
-// `sites` is the list of viable sites the world declares; knownSites() filters it to the discovered ones.
-export function createDiscovery(grid, sites = []) {
+export function createDiscovery(grid) {
   const known = new Set();
 
   const discovery = {
@@ -28,10 +27,9 @@ export function createDiscovery(grid, sites = []) {
       return discovery.isKnown(x, y) ? grid.at(x, y) : null;
     },
 
-    knownSites() {
-      return sites
-        .filter((site) => discovery.isKnown(site.x, site.y))
-        .map((site) => ({ x: site.x, y: site.y }));
+    // Every discovered cell, in flat-index order. Makes no judgement about whether a cell is a good place to live.
+    knownCells() {
+      return [...known].sort((a, b) => a - b).map((index) => grid.cells[index]);
     },
 
     get size() {
@@ -47,7 +45,7 @@ export function createDiscovery(grid, sites = []) {
 }
 
 // Rebuilds a Discovery from flat indices. Indices may come in any order. Entries that are not integers,
-// fall outside the grid, or repeat an earlier entry are ignored, so a corrupt save cannot crash the load.
+// fall outside the grid, or repeat an earlier entry are ignored, so a damaged save loads with less territory.
 export function discoveryFromJSON(grid, indices) {
   const discovery = createDiscovery(grid);
   const total = grid.width * grid.height;

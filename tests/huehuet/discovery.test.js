@@ -28,11 +28,30 @@ test('knownCell devuelve la celda real una vez conocida', () => {
   assert.equal(d.knownCell(3, 3), grid.at(3, 3));
 });
 
-test('knownSites solo incluye celdas conocidas', () => {
-  const w = generateWorld(11);
-  const d = createDiscovery(w.grid);
-  d.reveal(w.start.x, w.start.y, 4);
-  for (const s of d.knownSites()) assert.ok(d.isKnown(s.x, s.y));
+test('knownCells está vacío al empezar', () => {
+  const d = createDiscovery(createGrid(10, 10));
+  assert.deepEqual(d.knownCells(), []);
+});
+
+test('knownCells devuelve solo las celdas descubiertas, las reales, en orden de índice plano', () => {
+  const grid = createGrid(12, 9);
+  const d = createDiscovery(grid);
+  d.reveal(9, 5, 0); // índice 5 * 12 + 9 = 69
+  d.reveal(0, 1, 0); // índice 1 * 12 + 0 = 12
+  const cells = d.knownCells();
+  assert.equal(cells.length, 2);
+  assert.equal(cells[0], grid.at(0, 1));
+  assert.equal(cells[1], grid.at(9, 5));
+});
+
+test('knownCells tiene tantas celdas como size y todas son conocidas', () => {
+  const grid = createGrid(20, 20);
+  const d = createDiscovery(grid);
+  d.reveal(4, 4, 3);
+  d.reveal(10, 10, 2);
+  const cells = d.knownCells();
+  assert.equal(cells.length, d.size);
+  for (const c of cells) assert.ok(d.isKnown(c.x, c.y));
 });
 
 test('toJSON y discoveryFromJSON reproducen el conjunto conocido', () => {
@@ -82,14 +101,6 @@ test('knownCell es null para una celda no conocida aunque exista en el tablero',
   assert.equal(d.knownCell(4, 4), null);
   assert.equal(d.knownCell(-1, 0), null);
   assert.equal(d.knownCell(10, 0), null);
-});
-
-test('knownSites devuelve solo los sitios revelados entre los sitios dados', () => {
-  const grid = createGrid(20, 20);
-  const sitios = [{ x: 2, y: 2 }, { x: 15, y: 15 }];
-  const d = createDiscovery(grid, sitios);
-  d.reveal(2, 2, 1);
-  assert.deepEqual(d.knownSites(), [{ x: 2, y: 2 }]);
 });
 
 test('toJSON emite índices planos y→fila, con ancho y alto distintos', () => {
