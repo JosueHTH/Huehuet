@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateWorld } from '../../src/world/worldgen.js';
-import { BIOMES } from '../../src/world/grid.js';
+import { readdirSync, readFileSync } from 'node:fs';
+import { generateWorld, chooseStart } from '../../src/world/worldgen.js';
+import { createRng } from '../../src/core/rng.js';
+import { createGrid, BIOMES } from '../../src/world/grid.js';
 import { RESOURCES } from '../../src/world/resources.js';
 
 test('la misma semilla produce un mundo idéntico', () => {
@@ -58,11 +60,10 @@ test('la celda inicial está a 20 celdas o más del sitio viable MÁS CERCANO, o
     const d = nearestSiteDistance(w, w.start.x, w.start.y);
     if (d >= 20) continue;
     // Imposible cumplir 20: ninguna celda no acuática puede estar más lejos del sitio más cercano.
-    for (const c of w.grid.cells) {
-      if (c.biome === 'agua' || c.biome === 'rio') continue;
-      assert.ok(nearestSiteDistance(w, c.x, c.y) <= d + 1e-9,
-        `semilla ${seed}: ${c.x},${c.y} está más lejos (${nearestSiteDistance(w, c.x, c.y)}) que start (${d})`);
-    }
+    const maximo = Math.max(...w.grid.cells
+      .filter((c) => c.biome !== 'agua' && c.biome !== 'rio')
+      .map((c) => nearestSiteDistance(w, c.x, c.y)));
+    assert.ok(d >= maximo - 1e-9, `semilla ${seed}: start a ${d}, pero existe una celda a ${maximo}`);
   }
 });
 
@@ -120,4 +121,85 @@ test('generateWorld no usa Math.random', () => {
   const real = Math.random;
   Math.random = () => { throw new Error('generateWorld usó Math.random'); };
   try { generateWorld(3); } finally { Math.random = real; }
+});
+
+// Completeness and soundness against an independent definition (no grid.forRadius).
+test('viableSites es exactamente el conjunto de celdas no acuáticas con río a distancia <= 3', () => {
+  for (const seed of [77, 5, 31]) {
+    const w = generateWorld(seed);
+    const rios = w.grid.cells.filter((c) => c.river);
+    const esperado = w.grid.cells
+      .filter((c) => c.biome !== 'agua' && c.biome !== 'rio')
+      .filter((c) => rios.some((r) => (c.x - r.x) ** 2 + (c.y - r.y) ** 2 <= 9))
+      .map((c) => `${c.x},${c.y}`);
+    assert.deepEqual(w.viableSites.map((s) => `${s.x},${s.y}`), esperado, `semilla ${seed}`);
+  }
+});
+
+test('la celda inicial nunca es río ni agua', () => {
+  for (let seed = 0; seed < 40; seed++) {
+    const w = generateWorld(seed);
+    const c = w.grid.at(w.start.x, w.start.y);
+    assert.ok(c.biome !== 'agua' && c.biome !== 'rio' && !c.river, `semilla ${seed}: ${c.biome}`);
+  }
+});
+
+const gridPlano = (w, h) => {
+  const g = createGrid(w, h);
+  for (const c of g.cells) c.biome = 'pradera';
+  return g;
+};
+
+test('chooseStart sin celdas a 20 elige la más lejana al sitio más cercano', () => {
+  const g = gridPlano(10, 10);
+  const start = chooseStart(g, [{ x: 0, y: 0 }], createRng(1));
+  assert.deepEqual(start, { x: 9, y: 9 });
+});
+
+test('chooseStart maximiza la distancia al sitio MÁS CERCANO con varios sitios', () => {
+  const g = gridPlano(10, 1);
+  const start = chooseStart(g, [{ x: 0, y: 0 }, { x: 9, y: 0 }], createRng(1));
+  assert.ok(start.x === 4 || start.x === 5, `x=${start.x}`);
+});
+
+test('chooseStart excluye río y agua aunque estén más lejos', () => {
+  const g = gridPlano(40, 1);
+  for (const c of g.cells) {
+    if (c.x >= 20 && c.x < 30) c.biome = 'rio';
+    if (c.x >= 30) c.biome = 'agua';
+  }
+  const start = chooseStart(g, [{ x: 0, y: 0 }], createRng(1));
+  assert.equal(start.x, 19);
+});
+
+test('en un mundo pequeño la inicial maximiza la distancia al sitio más cercano', () => {
+  const w = generateWorld(9, { width: 12, height: 12 });
+  const cerca = (x, y) => Math.min(...w.viableSites.map((s) => Math.hypot(x - s.x, y - s.y)));
+  const d = cerca(w.start.x, w.start.y);
+  assert.ok(d < 20, 'la rama de degradación debe ejecutarse');
+  const maximo = Math.max(...w.grid.cells
+    .filter((c) => c.biome !== 'agua' && c.biome !== 'rio')
+    .map((c) => cerca(c.x, c.y)));
+  assert.equal(d, maximo);
+});
+
+// Red de seguridad del invariante: sin ríos generados, la reserva debe crear sitios viables.
+test('sin ríos generados, el río central garantiza sitios viables', () => {
+  for (const seed of [0, 1, 2, 3, 4]) {
+    const w = generateWorld(seed, { riverCount: 0 });
+    assert.ok(w.viableSites.length > 0, `semilla ${seed}`);
+    const centro = w.grid.cells.filter((c) => c.river);
+    assert.equal(centro.length, w.grid.height, 'un río de una celda por fila');
+    assert.ok(centro.every((c) => c.biome === 'rio'));
+    assert.ok(w.grid.at(w.start.x, w.start.y).biome !== 'rio');
+  }
+});
+
+test('src/world no usa APIs ambientales ni aleatoriedad global', () => {
+  const dir = new URL('../../src/world/', import.meta.url);
+  const prohibidos = ['window', 'document', 'canvas', 'localStorage', 'Date.now', 'Math.random'];
+  for (const f of readdirSync(dir).filter((n) => n.endsWith('.js'))) {
+    const fuente = readFileSync(new URL(f, dir), 'utf8');
+    for (const p of prohibidos) assert.ok(!fuente.includes(p), `${f} menciona ${p}`);
+  }
 });

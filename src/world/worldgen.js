@@ -59,11 +59,11 @@ function generateClimate(grid, rng) {
 }
 
 // Highest cells first, skipping any too close to one already chosen.
-function pickRiverSources(grid) {
+function pickRiverSources(grid, count) {
   const byHeight = [...grid.cells].sort((a, b) => b.elevation - a.elevation || a.y - b.y || a.x - b.x);
   const sources = [];
   for (const cell of byHeight) {
-    if (sources.length === RIVER_COUNT) break;
+    if (sources.length === count) break;
     if (cell.elevation <= WATER_LEVEL) break;
     if (sources.every((s) => Math.hypot(s.x - cell.x, s.y - cell.y) >= RIVER_MIN_SPACING)) {
       sources.push(cell);
@@ -149,7 +149,7 @@ function findViableSites(grid) {
 
 // Start must be >= MIN_START_DISTANCE from the NEAREST viable site so the band has to walk.
 // If no land cell qualifies, fall back to the land cell farthest from its nearest site.
-function chooseStart(grid, sites, rng) {
+export function chooseStart(grid, sites, rng) {
   const nearest = (c) => {
     let best = Infinity;
     for (const s of sites) best = Math.min(best, Math.hypot(c.x - s.x, c.y - s.y));
@@ -167,14 +167,15 @@ function chooseStart(grid, sites, rng) {
 }
 
 export function generateWorld(seed, opts = {}) {
-  const { width = DEFAULT_SIZE, height = DEFAULT_SIZE } = opts;
+  // riverCount is a test seam: 0 forces the central-river fallback.
+  const { width = DEFAULT_SIZE, height = DEFAULT_SIZE, riverCount = RIVER_COUNT } = opts;
   const rng = createRng(seed);
   const grid = createGrid(width, height);
 
   fillField(grid, createValueNoise(rng.fork('elevacion')), 'elevation', NOISE_SCALE, 0);
   normalizeElevation(grid);
   generateClimate(grid, rng);
-  for (const source of pickRiverSources(grid)) traceRiver(grid, source);
+  for (const source of pickRiverSources(grid, riverCount)) traceRiver(grid, source);
   assignBiomesAndResources(grid, rng.fork('recursos'));
 
   let viableSites = findViableSites(grid);
@@ -182,6 +183,9 @@ export function generateWorld(seed, opts = {}) {
     carveCentralRiver(grid, rng.fork('rio-central'));
     assignBiomesAndResources(grid, rng.fork('recursos'));
     viableSites = findViableSites(grid);
+    if (viableSites.length === 0) {
+      throw new Error(`generateWorld: la semilla ${seed} no tiene sitio viable tras el río central`);
+    }
   }
 
   const start = chooseStart(grid, viableSites, rng.fork('inicio'));
