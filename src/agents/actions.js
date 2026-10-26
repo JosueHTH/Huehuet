@@ -76,7 +76,7 @@ const HALLAZGO_MINIMO = 10;
 // un NPC sediento que YA ha visto un río se alejaba de él y moría de sed en dos días. Aquí la salida
 // se vuelve coherente con su motivo: si hay desesperación y la banda conoce una celda con ese recurso,
 // se camina hacia ella. Sin recurso conocido (o sin desesperación) sigue siendo exploración al azar.
-export const RADIO_BUSQUEDA_VITAL = 24;   // celdas a la redonda en las que se busca el recurso conocido
+const RADIO_BUSQUEDA_VITAL = 24;          // celdas a la redonda en las que se busca el recurso conocido
 const SED_DESESPERADA = 50;               // a partir de aquí la sed dirige el paso
 const HAMBRE_DESESPERADA = 60;
 

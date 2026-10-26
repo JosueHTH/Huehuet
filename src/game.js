@@ -134,7 +134,8 @@ export function stepGame(game, ticks) {
 // (y el descarte del acumulador tras una pausa larga) es el del reloj, no se duplica aquí.
 // Cada tick se simula con su propia hora: un lote de 24 no vive las 24 horas a la vez.
 export function advanceGame(game, dtMs, speed) {
-  if (game.over) return 0;
+  // Un dtMs o una velocidad no finitos envenenarían el acumulador del reloj para siempre: se descartan.
+  if (game.over || !Number.isFinite(dtMs) || !Number.isFinite(speed)) return 0;
   const desde = game.clock.tick;
   const ticks = game.clock.advance(dtMs, speed);
   for (let i = 1; i <= ticks; i++) {

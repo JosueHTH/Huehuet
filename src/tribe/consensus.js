@@ -40,10 +40,10 @@ export function npcSiteScore(npc, site) {
     if (AUDACIA.factores.includes(f.id)) peso *= 1 + AUDACIA.aumento * audacia;
     return peso;
   });
-  // Se renormaliza por la suma de pesos positivos YA reponderados: dar más peso a un factor lo vuelve más
-  // importante frente a los demás, no más grande en total. Así la visión de cada NPC sigue siendo un 0..100 del
-  // mismo sitio y los rasgos no inflan (ni desinflan) la media de la banda. Sin rasgos coincide con site.total.
-  // Mismo normalizador que sitescore (peso × valor alcanzable), ya reponderado: sin rasgos coincide con site.total.
+  // Se renormaliza por los pesos positivos YA reponderados, cada uno por su valor alcanzable: el mismo
+  // normalizador que usa sitescore. Dar más peso a un factor lo vuelve más importante frente a los demás, no
+  // más grande en total. Así la visión de cada NPC sigue siendo un 0..100 del mismo sitio y los rasgos no
+  // inflan (ni desinflan) la media de la banda. Sin rasgos coincide exactamente con site.total.
   const denominador = pesos.reduce((a, p, i) => a + Math.max(0, p) * (VALOR_ALCANZABLE[site.factors[i].id] ?? 1), 0);
   const base = site.factors.map((f, i) => (denominador > 0 ? valorQuePuntua(f.id, f.value) * pesos[i] / denominador * 100 : 0));
   const positivo = base.reduce((a, c) => a + Math.max(0, c), 0);

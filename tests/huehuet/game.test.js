@@ -10,6 +10,12 @@ import { createBand, livingNpcs, bandPressure, TICKS_HASTA_MORIR } from '../../s
 import { foundSettlement, avanceFinanciable, BUILDINGS } from '../../src/tribe/settlement.js';
 import { acceptanceThreshold } from '../../src/tribe/sitescore.js';
 import { INTERVALO_EVALUACION, ESPERA_MINIMA } from '../../src/tribe/consensus.js';
+import { ACTIONS } from '../../src/agents/actions.js';
+import { chooseAction } from '../../src/agents/utility.js';
+import { createNpc } from '../../src/agents/npc.js';
+import { createGrid } from '../../src/world/grid.js';
+import { createDiscovery } from '../../src/world/discovery.js';
+import { createClock } from '../../src/core/clock.js';
 import { ambientUses } from './purity.js';
 
 // Estado comparable de una partida: todo lo que define el avance, sin funciones (rng, rejilla y reloj
@@ -118,7 +124,7 @@ test('al asentarse se crea el asentamiento y queda en la crónica', () => {
 // Las dos historias que promete el diseño: "eligieron bien" y "se conformaron".
 test('hay semillas donde la banda elige bien y semillas donde se conforma', () => {
   const historias = [];
-  for (const seed of [1, 2, 3, 4, 5, 7, 21, 23, 42]) {
+  for (const seed of [1, 2, 3, 4, 5, 7, 21, 22, 23, 42]) {
     const g = createGame(seed);
     correrHasta(g, 400, (p) => p.band.settled || p.over);
     if (!g.band.settled || !g.lastDecision?.settle) continue;
@@ -131,6 +137,12 @@ test('hay semillas donde la banda elige bien y semillas donde se conforma', () =
   assert.ok(seConformaron.length > 0, `ninguna se conformó: ${JSON.stringify(historias)}`);
   // Conformarse es asentarse en algo que en calma se habría rechazado, con la necesidad apretando.
   for (const h of seConformaron) assert.ok(h.presion > 0, `semilla ${h.seed} se conformó sin presión`);
+  // Y el caso fuerte: alguna banda se asienta bien por debajo de lo que pediría en calma, apremiada.
+  const apurada = seConformaron.find((h) => h.presion >= 0.35 && h.media <= acceptanceThreshold(0) - 8);
+  assert.ok(apurada, `nadie se conformó de verdad (presión alta, media baja): ${JSON.stringify(seConformaron)}`);
+  // Y el caso contrario: alguna se asienta porque el sitio es bueno, no porque no le quede otra.
+  const tranquila = eligieronBien.find((h) => h.presion <= 0.3);
+  assert.ok(tranquila, `nadie eligió bien en calma: ${JSON.stringify(eligieronBien)}`);
 });
 
 test('la aldea se levanta: al menos un edificio termina y la crónica lo cuenta', () => {
@@ -178,6 +190,16 @@ test('antes del fin la crónica cuenta las muertes: el relato no se corta antes 
   const fin = g.chronicle.entries.findIndex((e) => e.type === 'fin');
   const muertes = g.chronicle.entries.filter((e, i) => i < fin && /murió/.test(e.text));
   assert.ok(muertes.length > 0, 'nadie murió antes del final');
+});
+
+test('tras la extinción el tick se corta ahí: no se decide ni se construye sobre una banda muerta', () => {
+  const g = partidaMoribunda();
+  g.band.lastEvaluation = -1000;   // la evaluación toca justo en el tick en que mueren
+  stepGame(g, 1);
+  assert.equal(g.over, true);
+  assert.equal(g.chronicle.entries[g.chronicle.entries.length - 1].type, 'fin', 'nada se cuenta después del final');
+  assert.equal(g.lastDecision, null, 'una banda muerta no elige dónde vivir');
+  assert.equal(g.band.site, null);
 });
 
 test('una banda al límite pero con mundo alrededor no se extingue: va a por el agua', () => {
@@ -228,6 +250,13 @@ test('advanceGame no simula nada si no se ha acumulado un tick', () => {
   assert.equal(advanceGame(g, MS_POR_TICK / 4, 1), 0);
   assert.equal(g.clock.tick, 0);
   assert.equal(g.discovery.size, createGame(4).discovery.size);
+});
+
+test('advanceGame descarta un dt o una velocidad imposibles y no rompe el reloj', () => {
+  const g = createGame(4);
+  for (const [dt, v] of [[NaN, 1], [1000, NaN], [Infinity, 1]]) assert.equal(advanceGame(g, dt, v), 0);
+  assert.equal(g.clock.tick, 0);
+  assert.equal(advanceGame(g, MS_POR_TICK * 3, 1), 3, 'el reloj sigue sano después');
 });
 
 // --- Contratos de cableado -----------------------------------------------------------------------
@@ -294,6 +323,18 @@ test('los edificios caben en la rejilla aunque el sitio esté pegado al borde', 
   }
 });
 
+test('fundar junto al borde no deja edificios fuera del mapa', () => {
+  const g = createGame(7);
+  g.band.x = 0;
+  g.band.y = 0;
+  g.band.site = { x: 0, y: 0 };
+  stepGame(g, 1);
+  assert.ok(g.settlement, 'la banda ya estaba en su sitio: debía fundar');
+  for (const b of g.settlement.buildings) {
+    assert.ok(g.grid.inBounds(b.x, b.y), `${b.id} cae fuera del mapa en (${b.x}, ${b.y})`);
+  }
+});
+
 test('la obra no se atasca en silencio con un coste de cero: NaN no envenena el mínimo', () => {
   assert.equal(avanceFinanciable({ leña: 0 }, {}), Infinity, 'lo que no cuesta nada no limita el avance');
   assert.equal(avanceFinanciable({ leña: 0, piedra: 4 }, { piedra: 2 }), 0.5);
@@ -333,4 +374,90 @@ test('la presión que mueve la decisión es la de la banda y vive en 0..1', () =
   const p = bandPressure(g.band, { season: g.clock.season });
   assert.ok(p >= 0 && p <= 1);
   if (g.lastDecision) assert.ok(g.lastDecision.pressure >= 0 && g.lastDecision.pressure <= 1);
+});
+
+// --- Balance medido en este Task (Step C) --------------------------------------------------------
+// Las dos correcciones que hicieron falta para que el arco se pueda correr. Se prueban aquí, con el
+// catálogo de acciones real, porque son decisiones de balance de Task 11, no del catálogo.
+
+// Escena a mano: pradera seca con un río conocido a `distancia` celdas al este del NPC.
+function escenaConRioLejos(distancia, needs = {}) {
+  const grid = createGrid(40, 40);
+  for (let y = 0; y < 40; y++) {
+    const rio = grid.at(16 + distancia, y);
+    rio.biome = 'rio';
+    rio.river = true;
+    rio.resources.agua = 10;
+  }
+  const discovery = createDiscovery(grid);
+  discovery.reveal(16, 16, distancia + 2);   // la banda ya ha visto el río
+  const npc = createNpc(createRng(5), { x: 16, y: 16 });
+  npc.needs = { ...npc.needs, ...needs };
+  const band = createBand(createRng(5), { x: 16, y: 16 }, { size: 0 });
+  band.npcs.push(npc);
+  return { npc, band, ctx: { grid, discovery, clock: createClock({ tick: 12 }) } };
+}
+
+const accion = (id) => ACTIONS.find((a) => a.id === id);
+
+test('un NPC sediento camina hacia el agua que ya conoce, no al azar', () => {
+  const { npc, band, ctx } = escenaConRioLejos(9, { sed: 90 });
+  const antes = npc.x;
+  accion('explorar').apply(npc, band, ctx, createRng(1));
+  assert.ok(npc.x > antes, `se alejó del río: ${antes} -> ${npc.x}`);
+  assert.equal(npc.y, 16, 'no da vueltas: va derecho');
+});
+
+test('sin agua conocida el paso desesperado sigue siendo exploración al azar', () => {
+  const grid = createGrid(40, 40);
+  const discovery = createDiscovery(grid);
+  discovery.reveal(16, 16, 5);
+  const npc = createNpc(createRng(5), { x: 16, y: 16 });
+  npc.needs = { ...npc.needs, sed: 95 };
+  const band = createBand(createRng(5), { x: 16, y: 16 }, { size: 0 });
+  const destinos = new Set();
+  for (let seed = 0; seed < 12; seed++) {
+    const copia = { ...npc, x: 16, y: 16 };
+    accion('explorar').apply(copia, band, { grid, discovery, clock: createClock({ tick: 12 }) }, createRng(seed));
+    destinos.add(`${copia.x},${copia.y}`);
+  }
+  assert.ok(destinos.size > 1, 'sin meta conocida no puede haber una sola dirección');
+});
+
+test('un NPC sediento no se mueve si el agua conocida ya está a su alcance: bebe', () => {
+  const { npc, band, ctx } = escenaConRioLejos(1, { sed: 90 });
+  assert.equal(chooseAction(npc, band, ctx).id, 'beber');
+});
+
+test('la recolección sigue el plan de obra: sube con lo que falta y se apaga al tenerlo', () => {
+  const g = createGame(7);
+  const band = g.band;
+  const sueltos = accion('talar').score(band.npcs[0], band, { grid: g.grid, discovery: g.discovery, clock: g.clock });
+  const sitio = { x: band.x, y: band.y };
+  for (const celda of g.grid.cells) { celda.resources.leña = 10; celda.resources.piedra = 20; }
+  g.discovery.reveal(band.x, band.y, 3);
+  const ctx = { grid: g.grid, discovery: g.discovery, clock: g.clock };
+  const npc = band.npcs[0];
+  const nomada = { talar: accion('talar').score(npc, band, ctx), piedra: accion('recoger_piedra').score(npc, band, ctx) };
+  foundSettlement(band, sitio, 0);
+  const conObra = { talar: accion('talar').score(npc, band, ctx), piedra: accion('recoger_piedra').score(npc, band, ctx) };
+  assert.ok(conObra.talar > nomada.talar, 'la hoguera pide leña');
+  assert.equal(conObra.piedra, nomada.piedra, 'la hoguera no pide piedra: nada que empujar');
+  band.inventory.leña = 1000;
+  assert.equal(accion('talar').score(npc, band, ctx), nomada.talar, 'con leña de sobra el empuje se apaga');
+  // La choza (segunda en la cola) sí pide piedra.
+  band.settlement.queue.shift();
+  assert.ok(accion('recoger_piedra').score(npc, band, ctx) > nomada.piedra, 'la choza pide piedra');
+  assert.ok(sueltos >= 0);
+});
+
+test('mientras la banda es nómada el plan de obra no existe y nada cambia', () => {
+  const g = createGame(7);
+  for (const celda of g.grid.cells) { celda.resources.leña = 10; celda.resources.piedra = 20; }
+  g.discovery.reveal(g.band.x, g.band.y, 3);
+  const ctx = { grid: g.grid, discovery: g.discovery, clock: g.clock };
+  const npc = g.band.npcs[0];
+  const base = accion('talar').score(npc, g.band, ctx);
+  g.band.settlement = { x: 0, y: 0, buildings: [{ id: 'hoguera', cost: { leña: 6 } }], queue: ['hoguera'] };
+  assert.equal(accion('talar').score(npc, g.band, ctx), base, 'sin band.settled no hay obra');
 });
