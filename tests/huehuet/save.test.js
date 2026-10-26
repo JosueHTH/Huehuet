@@ -5,7 +5,7 @@ import { createGame, stepGame, advanceGame } from '../../src/game.js';
 import { livingNpcs } from '../../src/tribe/band.js';
 import { BUILDINGS } from '../../src/tribe/settlement.js';
 import { MAX_ENTRADAS } from '../../src/chronicle.js';
-import { SCHEMA_VERSION, UnsupportedVersionError, serialize, deserialize, migrate } from '../../src/save/schema.js';
+import { SCHEMA_VERSION, UnsupportedVersionError, serialize, deserialize, migrate, lineaBase } from '../../src/save/schema.js';
 import { createStore } from '../../src/save/store.js';
 import { ambientUses } from './purity.js';
 
@@ -697,4 +697,63 @@ test('el rng reanuda su flujo exactamente desde el estado guardado', async () =>
   const a = createRng(9); for (let i = 0; i < 17; i++) a.next();
   const b = createRng(9); b.setState(a.getState());
   assert.deepEqual([a.next(), a.int(0, 99), a.chance(0.5)], [b.next(), b.int(0, 99), b.chance(0.5)]);
+});
+
+// --- Revisión: regeneración documentada, coste en frío, setState estricto, línea base aislada ------
+
+test('schema.js documenta que cambiar la regeneración exige subir SCHEMA_VERSION y migrar', () => {
+  const fuente = readFileSync(new URL('../../src/save/schema.js', import.meta.url), 'utf8');
+  const [antesDeVersion] = fuente.split('export const SCHEMA_VERSION');
+  const [, antesDeMemo] = fuente.split('const sumaDeRecursos');
+  const nota = /REGEN_BIOMES[^]*regenPerDay/;
+  const exige = /sub(ir|e) SCHEMA_VERSION/;
+  assert.ok(nota.test(antesDeVersion.slice(-1500)) && exige.test(antesDeVersion.slice(-1500)), 'falta la nota junto a SCHEMA_VERSION');
+  const cuerpo = fuente.slice(fuente.indexOf('const sumaDeRecursos'), fuente.indexOf('const CAPACIDAD_MEMO'));
+  assert.ok(nota.test(cuerpo) && exige.test(cuerpo), 'falta la nota junto a la línea base');
+  assert.ok(antesDeMemo.length > 0);
+});
+
+test('writeSlot con almacenamiento bloqueado no serializa la partida', () => {
+  const store = createStore(memoriaInaccesible());
+  const slot = store.createSlot('X', 1);
+  let accesos = 0;
+  const espia = new Proxy(createGame(1), { get(t, p) { accesos++; return Reflect.get(t, p); } });
+  const r = store.writeSlot(slot.id, espia);
+  assert.equal(r.ok, false);
+  assert.equal(accesos, 0, 'se serializó para nada');
+});
+
+test('alternar entre dos semillas no vuelve a pagar el coste en frío', () => {
+  const a = createGame(101); stepGame(a, 24 * 3);
+  const b = createGame(102); stepGame(b, 24 * 3);
+  let t = performance.now(); serialize(a); const fria = performance.now() - t;
+  serialize(b);
+  t = performance.now(); serialize(a); serialize(b); const tibia = (performance.now() - t) / 2;
+  assert.ok(tibia < fria / 3, `alternar cuesta ${tibia.toFixed(0)} ms frente a ${fria.toFixed(0)} ms en frío`);
+});
+
+test('la memoria de líneas base está acotada (no crece sin límite)', () => {
+  for (let s = 200; s < 230; s++) lineaBase(s, 8, 8, 0, null);
+  assert.ok(lineaBase.tamano() <= 4);
+});
+
+test('lineaBase devuelve una copia: mutarla no corrompe guardados posteriores', () => {
+  const g = createGame(103); stepGame(g, 48);
+  const antes = JSON.stringify(serialize(g));
+  const base = lineaBase(g.seed, g.grid.width, g.grid.height, g.clock.tick);
+  for (const c of base) { c.biome = 'x'; for (const k of Object.keys(c.resources)) c.resources[k] = -1; }
+  assert.equal(JSON.stringify(serialize(g)), antes);
+});
+
+test('rng.setState rechaza lo que no es un entero de 32 bits', async () => {
+  const { createRng } = await import('../../src/core/rng.js');
+  const r = createRng(1);
+  for (const malo of [undefined, NaN, Infinity, 1.5, '7', null, -1, 2 ** 32, 2 ** 32 + 5]) {
+    assert.throws(() => r.setState(malo), /estado|state/i, String(malo));
+  }
+  const antes = r.getState();
+  assert.throws(() => r.setState(NaN));
+  assert.equal(r.getState(), antes, 'un valor malo no debe tocar el estado');
+  r.setState(2 ** 32 - 1); assert.equal(r.getState(), 2 ** 32 - 1);
+  r.setState(0); assert.equal(r.getState(), 0);
 });

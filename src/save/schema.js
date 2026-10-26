@@ -12,6 +12,13 @@ import { discoveryFromJSON } from '../world/discovery.js';
 import { BUILDINGS } from '../tribe/settlement.js';
 import { livingNpcs } from '../tribe/band.js';
 
+// ATENCIÓN antes de tocar la regeneración de recursos (REGEN_BIOMES, regenPerDay, max o la lógica de
+// regenerateResources en world/resources.js) o el generador del mundo: el guardado NO almacena las celdas que
+// nadie ha tocado. Las recalcula al cargar ejecutando el código de regeneración VIVO sobre el mundo de la
+// semilla (ver lineaBase). Cambiar esas constantes o esa lógica altera, sin aviso ni error, el estado de toda
+// partida ya guardada. Si hace falta cambiarlas: sube SCHEMA_VERSION y añade en MIGRACIONES una migración que
+// fije los recursos de la versión antigua (o recalcúlalos con la regla antigua). Así una partida de la Etapa 1
+// sigue abriéndose igual en la Etapa 2.
 export const SCHEMA_VERSION = 1;
 
 export class UnsupportedVersionError extends Error {
@@ -93,17 +100,29 @@ const sumaDeRecursos = (celda) => Object.values(celda.resources).reduce((suma, v
 // día); contra esta línea solo quedan las celdas que la banda gastó y aún no se han repuesto.
 // Usa la regeneración real, un tick cada vez, para coincidir bit a bit con la simulación, y deja de tocar las
 // celdas que ya no cambian (casi todas en un par de días). Aun así cuesta ~0,5 s desde cero, así que se
-// recuerda la última (memoización de una función pura: misma semilla, mismo tamaño, tick mayor o igual).
-let recuerdo = null;
+// recuerdan las últimas (memoización de una función pura: misma semilla, mismo tamaño, tick mayor o igual).
+//
+// POR QUÉ importa: las celdas intactas no se guardan; se recalculan aquí con la regeneración viva. Cualquier
+// cambio en REGEN_BIOMES, regenPerDay, max o regenerateResources cambia lo que las partidas viejas cargan.
+// Ese cambio exige subir SCHEMA_VERSION y migrar (ver la nota junto a SCHEMA_VERSION).
+//
+// Acotada a CAPACIDAD_MEMO entradas (4: dos o tres ranuras alternándose y alguna más; ~9k celdas ligeras
+// cada una, unos pocos MB). Si se llena sale la menos usada. Cambiar de ranura no vuelve a pagar el coste en frío.
+const CAPACIDAD_MEMO = 4;
+const recuerdos = new Map();   // clave -> { tick, celdas, activas }; el orden de inserción es el de uso
 
 const ligera = (grid) => grid.cells.map((c) => ({ biome: c.biome, resources: { ...c.resources } }));
 
-function lineaBase(seed, ancho, alto, tick, virgen) {
+export function lineaBase(seed, ancho, alto, tick, virgen) {
   const clave = `${seed}|${ancho}|${alto}`;
-  if (!recuerdo || recuerdo.clave !== clave || recuerdo.tick > tick) {
+  let recuerdo = recuerdos.get(clave);
+  recuerdos.delete(clave);
+  if (!recuerdo || recuerdo.tick > tick) {
     const celdas = ligera(virgen ?? generateWorld(seed, { width: ancho, height: alto }).grid);
-    recuerdo = { clave, tick: 0, celdas, activas: celdas };
+    recuerdo = { tick: 0, celdas, activas: celdas };
   }
+  recuerdos.set(clave, recuerdo);   // la más reciente al final
+  while (recuerdos.size > CAPACIDAD_MEMO) recuerdos.delete(recuerdos.keys().next().value);
   while (recuerdo.tick < tick && recuerdo.activas.length > 0) {
     const antes = recuerdo.activas.map(sumaDeRecursos);
     regenerateResources({ cells: recuerdo.activas }, 1);
@@ -111,8 +130,10 @@ function lineaBase(seed, ancho, alto, tick, virgen) {
     recuerdo.tick++;
   }
   recuerdo.tick = tick;   // sin celdas activas, los ticks que faltan no cambian nada
-  return recuerdo.celdas;
+  // Una copia: quien la reciba puede mutarla sin corromper la memoria que alimenta todos los guardados.
+  return ligera({ cells: recuerdo.celdas });
 }
+lineaBase.tamano = () => recuerdos.size;
 
 function diferenciasDeRecursos(game) {
   const { grid, seed } = game;

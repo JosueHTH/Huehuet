@@ -163,13 +163,14 @@ export function createStore(storage = almacenamientoDelNavegador(), opts = {}) {
       const lista = leerIndice().slice();
       const slot = buscar(lista, id);
       if (!slot) return { ok: false, error: 'Esa partida ya no existe.' };
+      // Antes de serializar: con el almacenamiento bloqueado serializar cuesta ~0,8 s en frío y no sirve de nada.
+      if (!sondeoOk) return { ok: false, error: 'El almacenamiento no está disponible: la partida sigue solo en memoria.' };
       let texto;
       try {
         texto = JSON.stringify(serialize(game));
       } catch (e) {
         return { ok: false, error: `No se pudo preparar la partida para guardarla: ${mensajeDe(e)}` };
       }
-      if (!sondeoOk) return { ok: false, error: 'El almacenamiento no está disponible: la partida sigue solo en memoria.' };
       const error = escribir(CLAVE_PARTIDA(id), texto);
       if (error !== null) return { ok: false, error: `No se pudo guardar la partida (¿almacenamiento lleno?): ${error}` };
       Object.assign(slot, describe(game), { updatedAt: ahora() });

@@ -12,6 +12,10 @@ export const NOMBRES = [
 
 // Id counters are kept per rng instance, so each game's band starts from its own seed
 // and no state leaks between games in one page session.
+// OJO para la etapa que añada nacimientos: el contador NO se guarda, y una partida cargada tiene un rng nuevo
+// (sin entrada aquí), así que el primer nacimiento tras cargar volvería a sortear un id desde cero y podría
+// chocar con los de la banda guardada. Hoy nadie crea NPCs tras createBand, por eso no ocurre. Al añadir
+// nacimientos hay que guardar el contador (o derivar el siguiente id del máximo existente).
 const counters = new WeakMap();
 
 function nextId(rng) {

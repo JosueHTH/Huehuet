@@ -9,7 +9,11 @@ function mulberry32(a) {
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-  return { next, getState: () => a >>> 0, setState: (s) => { a = s | 0; } };
+  return { next, getState: () => a >>> 0, setState: (s) => {
+    // Un estado malo reiniciaría el flujo en un punto fijo sin avisar: se rechaza en origen.
+    if (!Number.isInteger(s) || s < 0 || s > 0xFFFFFFFF) throw new RangeError(`rng.setState: el estado debe ser un entero de 32 bits sin signo (recibido ${String(s)})`);
+    a = s | 0;
+  } };
 }
 
 // FNV-1a, 32 bits.
