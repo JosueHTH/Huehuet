@@ -49,13 +49,30 @@ test('la celda inicial es transitable y no es agua', () => {
   }
 });
 
-test('la celda inicial está a 20 celdas o más del primer sitio viable', () => {
+const nearestSiteDistance = (w, x, y) =>
+  Math.min(...w.viableSites.map((s) => Math.hypot(x - s.x, y - s.y)));
+
+test('la celda inicial está a 20 celdas o más del sitio viable MÁS CERCANO, o maximiza esa distancia', () => {
   for (let seed = 0; seed < 40; seed++) {
     const w = generateWorld(seed);
-    const s = w.viableSites[0];
-    const d = Math.hypot(w.start.x - s.x, w.start.y - s.y);
-    assert.ok(d >= 20, `semilla ${seed}: distancia ${d}`);
+    const d = nearestSiteDistance(w, w.start.x, w.start.y);
+    if (d >= 20) continue;
+    // Imposible cumplir 20: ninguna celda no acuática puede estar más lejos del sitio más cercano.
+    for (const c of w.grid.cells) {
+      if (c.biome === 'agua' || c.biome === 'rio') continue;
+      assert.ok(nearestSiteDistance(w, c.x, c.y) <= d + 1e-9,
+        `semilla ${seed}: ${c.x},${c.y} está más lejos (${nearestSiteDistance(w, c.x, c.y)}) que start (${d})`);
+    }
   }
+});
+
+test('la restricción de 20 celdas no es vacua: se cumple en alguna semilla', () => {
+  let cumplen = 0;
+  for (let seed = 0; seed < 40; seed++) {
+    const w = generateWorld(seed);
+    if (nearestSiteDistance(w, w.start.x, w.start.y) >= 20) cumplen++;
+  }
+  assert.ok(cumplen > 0, 'ninguna semilla cumple la distancia de 20: la restricción sería vacua');
 });
 
 test('un mundo diminuto degrada la distancia de inicio sin colgarse', () => {

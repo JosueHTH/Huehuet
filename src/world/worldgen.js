@@ -147,15 +147,22 @@ function findViableSites(grid) {
   return sites;
 }
 
-function chooseStart(grid, firstSite, rng) {
-  const land = grid.cells.filter((c) => !isWater(c));
-  const distance = (c) => Math.hypot(c.x - firstSite.x, c.y - firstSite.y);
-  const far = land.filter((c) => distance(c) >= MIN_START_DISTANCE);
-  // If the map is too small for that gap, take the farthest land instead.
-  const pool = far.length > 0
-    ? far
-    : [land.reduce((best, c) => (distance(c) > distance(best) ? c : best))];
-  const pick = rng.pick(pool);
+// Start must be >= MIN_START_DISTANCE from the NEAREST viable site so the band has to walk.
+// If no land cell qualifies, fall back to the land cell farthest from its nearest site.
+function chooseStart(grid, sites, rng) {
+  const nearest = (c) => {
+    let best = Infinity;
+    for (const s of sites) best = Math.min(best, Math.hypot(c.x - s.x, c.y - s.y));
+    return best;
+  };
+  const scored = grid.cells.filter((c) => !isWater(c)).map((c) => ({ c, d: nearest(c) }));
+  const far = scored.filter((e) => e.d >= MIN_START_DISTANCE);
+  let pool = far;
+  if (far.length === 0) {
+    const best = Math.max(...scored.map((e) => e.d));
+    pool = scored.filter((e) => e.d === best);
+  }
+  const pick = rng.pick(pool).c;
   return { x: pick.x, y: pick.y };
 }
 
@@ -177,6 +184,6 @@ export function generateWorld(seed, opts = {}) {
     viableSites = findViableSites(grid);
   }
 
-  const start = chooseStart(grid, viableSites[0], rng.fork('inicio'));
+  const start = chooseStart(grid, viableSites, rng.fork('inicio'));
   return { seed, grid, start, viableSites };
 }
