@@ -2,3 +2,5 @@
 .godot/
 .superpowers/
 export/
+playwright-report/
+test-results/
