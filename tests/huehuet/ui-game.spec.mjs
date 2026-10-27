@@ -193,18 +193,38 @@ test('un toque sobre un sitio candidato abre su desglose', async ({ page }) => {
   assert.equal(await page.locator('.site-breakdown').count(), 1,
     `tocar el mapa sobre el sitio (${punto.x0}, ${punto.y0}) en (${Math.round(punto.x)}, ${Math.round(punto.y)}) no abrió ningún desglose`);
   assert.equal(await page.locator('.sheet.open').getAttribute('data-snap'), '0.9', 'el desglose no abrió a pantalla casi entera');
+
+  // Y con el dedo un poco al lado, que es como se toca de verdad: con el mapa alejado una celda mide 5 px y
+  // pedir puntería de media celda sería pedir puntería de 2,5 px.
+  await page.getByRole('button', { name: /cerrar/i }).click();
+  await tocar(page, { x: punto.x + 11, y: punto.y - 9 });
+  assert.equal(await page.locator('.site-breakdown').count(), 1,
+    'tocar a 14 px del centro del sitio no abrió su desglose: el dedo tiene que caber');
 });
 
 test('un toque en terreno vacío no abre nada', async ({ page }) => {
   await iniciarPartida(page, { semilla: SEMILLA });
-  // Una celda sin descubrir, lejos de la banda y de cualquier candidato.
-  const punto = await page.evaluate(() => {
+  const r = await rectaVisible(page);
+  // Un punto que esté DE VERDAD en pantalla (tocar fuera de la ventana no es tocar en el vacío: no es
+  // tocar nada, y una mutación que abriera algo con el dedo en el vacío sobrevivía a esta prueba) y a más
+  // de 80 px de cualquier NPC y de cualquier sitio candidato.
+  const elegido = await page.evaluate(async ({ x0, y0, x1, y1 }) => {
+    const { candidateSites } = await import('/src/tribe/sitescore.js');
     const { camera, game } = window.__huehuet;
-    const lejos = { x: game.band.x > 48 ? game.band.x - 20 : game.band.x + 20, y: game.band.y > 48 ? game.band.y - 20 : game.band.y + 20 };
-    return camera.worldToScreen(lejos.x, lejos.y);
-  });
-  await tocar(page, punto);
-  assert.equal(await page.locator('.sheet.open').count(), 0, 'un toque en el vacío abrió una hoja');
+    const ocupados = [
+      ...game.band.npcs.filter((n) => n.alive).map((n) => camera.worldToScreen(n.x + 0.5, n.y + 0.5)),
+      ...candidateSites(game.discovery, { season: game.clock.season }).map((s) => camera.worldToScreen(s.x + 0.5, s.y + 0.5)),
+    ];
+    const libre = (p) => ocupados.every((o) => Math.hypot(o.x - p.x, o.y - p.y) > 80);
+    for (let y = y0 + 30; y < y1 - 30; y += 20) {
+      for (let x = x0 + 30; x < x1 - 30; x += 20) if (libre({ x, y })) return { x, y };
+    }
+    return null;
+  }, r);
+  assert.ok(elegido !== null, 'no hay un solo punto del mapa visible libre de gente y de sitios');
+  await tocar(page, elegido);
+  assert.equal(await page.locator('.sheet.open').count(), 0,
+    `un toque en el vacío (${elegido.x}, ${elegido.y}) abrió una hoja`);
 });
 
 test('arrastrar mueve la cámara y no abre ninguna ficha', async ({ page }) => {
@@ -266,10 +286,13 @@ test('el doble toque vuelve a la banda después de haberse ido lejos', async ({ 
 // --- Autoguardado --------------------------------------------------------------------------------
 
 test('el juego se autoguarda cada pocos días de juego, con su miniatura', async ({ page }) => {
+  // La espera del índice tiene que agotarse ANTES que el reloj de la prueba: si no, lo que se lee cuando
+  // el autoguardado no escribe es «Test timeout», que no dice nada, en vez de la aserción que sí lo dice.
+  test.setTimeout(90000);
   await iniciarPartida(page, { semilla: SEMILLA });
   assert.equal((await indice(page)).slots[0].day, 0, 'el slot sembrado no empieza en el día 0');
   await elegirVelocidad(page, 'x10');
-  await expect.poll(async () => (await indice(page)).slots[0].day, { timeout: 30000, message: 'el autoguardado no escribió nunca' })
+  await expect.poll(async () => (await indice(page)).slots[0].day, { timeout: 20000, message: 'el autoguardado no escribió nunca' })
     .toBeGreaterThan(0);
   const slot = (await indice(page)).slots[0];
   assert.ok(slot.day >= 5, `el autoguardado escribió el día ${slot.day}: la cadencia no es la de 5 días`);
@@ -315,9 +338,10 @@ test('volver de una pestaña oculta no congela la página ni salta el tiempo', a
 });
 
 test('la partida se reanuda en el mismo día tras recargar', async ({ page }) => {
+  test.setTimeout(90000);
   await iniciarPartida(page, { semilla: SEMILLA });
   await elegirVelocidad(page, 'x10');
-  await expect.poll(async () => (await indice(page)).slots[0].day, { timeout: 30000 }).toBeGreaterThan(0);
+  await expect.poll(async () => (await indice(page)).slots[0].day, { timeout: 20000 }).toBeGreaterThan(0);
   const guardado = (await indice(page)).slots[0].day;
   await page.reload();
   await page.getByRole('button', { name: /^continuar/i }).first().click();
