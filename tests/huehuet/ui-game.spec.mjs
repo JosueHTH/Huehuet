@@ -190,16 +190,30 @@ test('un toque sobre un sitio candidato abre su desglose', async ({ page }) => {
   await iniciarPartida(page, { semilla: SEMILLA, ticks: TICKS_HASTA_SITIOS });
   const punto = await tocarPrimerSitio(page);
   assert.ok(punto !== null, 'la banda no conoce ningún sitio candidato que tocar');
-  assert.equal(await page.locator('.site-breakdown').count(), 1,
+  // Atado a la hoja ABIERTA: cerrar una hoja no vacía su cuerpo, así que .site-breakdown a secas sigue
+  // contando el desglose de hace un rato y la aserción no mediría nada.
+  assert.equal(await page.locator('.sheet.open .site-breakdown').count(), 1,
     `tocar el mapa sobre el sitio (${punto.x0}, ${punto.y0}) en (${Math.round(punto.x)}, ${Math.round(punto.y)}) no abrió ningún desglose`);
   assert.equal(await page.locator('.sheet.open').getAttribute('data-snap'), '0.9', 'el desglose no abrió a pantalla casi entera');
 
   // Y con el dedo un poco al lado, que es como se toca de verdad: con el mapa alejado una celda mide 5 px y
-  // pedir puntería de media celda sería pedir puntería de 2,5 px.
+  // pedir puntería de media celda sería pedir puntería de 2,5 px. El desvío va HACIA AFUERA del grupo de
+  // candidatos, porque los ocho están pegados (T15-c) y hacia adentro se caería sobre el vecino.
   await page.getByRole('button', { name: /cerrar/i }).click();
-  await tocar(page, { x: punto.x + 11, y: punto.y - 9 });
-  assert.equal(await page.locator('.site-breakdown').count(), 1,
-    'tocar a 14 px del centro del sitio no abrió su desglose: el dedo tiene que caber');
+  const afuera = await page.evaluate(async (DESVIO) => {
+    const { candidateSites } = await import('/src/tribe/sitescore.js');
+    const { camera, game } = window.__huehuet;
+    const sitios = candidateSites(game.discovery, { season: game.clock.season });
+    const p = sitios.map((s) => camera.worldToScreen(s.x + 0.5, s.y + 0.5));
+    const cx = p.reduce((a, q) => a + q.x, 0) / p.length;
+    const cy = p.reduce((a, q) => a + q.y, 0) / p.length;
+    const d = Math.hypot(p[0].x - cx, p[0].y - cy) || 1;
+    return { x: p[0].x + ((p[0].x - cx) / d) * DESVIO, y: p[0].y + ((p[0].y - cy) / d) * DESVIO };
+  }, 22);
+  assert.equal(await page.locator('.sheet.open').count(), 0, 'la hoja no se cerró');
+  await tocar(page, afuera);
+  assert.equal(await page.locator('.sheet.open .site-breakdown').count(), 1,
+    'tocar a 22 px del centro del sitio no abrió ningún desglose: el dedo tiene que caber');
 });
 
 test('un toque en terreno vacío no abre nada', async ({ page }) => {
