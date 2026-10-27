@@ -180,7 +180,8 @@ test('classifyPointer con una sola muestra o ninguna es un toque', () => {
 
 // --- createGestures -------------------------------------------------------------------------
 
-function banco() {
+function banco(opts = {}) {
+  const timers = [];
   const el = new EventTarget();
   el.captured = [];
   el.setPointerCapture = (id) => el.captured.push(id);
@@ -191,7 +192,13 @@ function banco() {
     onPinch: (f, cx, cy) => calls.pinch.push([f, cx, cy]),
     onTap: (x, y) => calls.tap.push([x, y]),
     onDoubleTap: (x, y) => calls.doubleTap.push([x, y]),
+  }, {
+    ...opts,
+    setTimer: (fn, ms) => { timers.push({ fn, ms, vivo: true }); return timers.length - 1; },
+    clearTimer: (id) => { if (timers[id]) timers[id].vivo = false; },
   });
+  // Dispara el temporizador pendiente (el que quede vivo) como si hubiera vencido el plazo.
+  const vence = () => { for (const t of timers) if (t.vivo) { t.vivo = false; t.fn(); } };
   const send = (type, id, x, y, t) => {
     const e = new Event(type);
     Object.defineProperty(e, 'pointerId', { value: id });
@@ -200,11 +207,11 @@ function banco() {
     Object.defineProperty(e, 'timeStamp', { value: t });
     el.dispatchEvent(e);
   };
-  return { el, g, calls, send };
+  return { el, g, calls, send, timers, vence };
 }
 
 test('un toque sin movimiento llama a onTap y a nada más; captura el puntero', () => {
-  const { el, calls, send } = banco();
+  const { el, calls, send } = banco({ doubleTapDelay: 0 });
   send('pointerdown', 1, 50, 60, 0);
   send('pointerup', 1, 50, 60, 80);
   assert.deepEqual(calls.tap, [[50, 60]]);
@@ -214,7 +221,7 @@ test('un toque sin movimiento llama a onTap y a nada más; captura el puntero', 
 });
 
 test('un temblor menor de 8 px sigue siendo toque y no mueve la cámara', () => {
-  const { calls, send } = banco();
+  const { calls, send } = banco({ doubleTapDelay: 0 });
   send('pointerdown', 1, 50, 60, 0);
   send('pointermove', 1, 55, 63, 20);
   send('pointerup', 1, 55, 63, 900);
@@ -293,34 +300,104 @@ test('pointercancel no produce toque', () => {
   assert.equal(calls.tap.length, 0);
 });
 
-test('doble toque: dos toques en menos de 300 ms y 30 px', () => {
-  const { calls, send } = banco();
+test('con retardo, el toque espera al plazo y entonces se entrega una sola vez', () => {
+  const { calls, send, timers, vence } = banco();
+  send('pointerdown', 1, 100, 100, 0); send('pointerup', 1, 100, 100, 50);
+  assert.equal(calls.tap.length, 0, 'aún no: podría ser el primero de un doble toque');
+  assert.equal(timers.filter((t) => t.vivo).length, 1);
+  assert.equal(timers[0].ms, 300);
+  vence();
+  assert.deepEqual(calls.tap, [[100, 100]]);
+  assert.equal(calls.doubleTap.length, 0);
+});
+
+test('doble toque: el segundo toque (300 ms, 30 px) cancela el pendiente y solo dispara onDoubleTap', () => {
+  const { calls, send, timers, vence } = banco();
   send('pointerdown', 1, 100, 100, 0); send('pointerup', 1, 100, 100, 50);
   send('pointerdown', 1, 110, 105, 200); send('pointerup', 1, 110, 105, 250);
   assert.deepEqual(calls.doubleTap, [[110, 105]]);
+  assert.equal(calls.tap.length, 0, 'ni ahora ni después hay onTap');
+  assert.equal(timers.filter((t) => t.vivo).length, 0, 'temporizador cancelado');
+  vence();
+  assert.equal(calls.tap.length, 0);
   // el tercero no se empareja con el segundo
   send('pointerdown', 1, 110, 105, 300); send('pointerup', 1, 110, 105, 340);
   assert.equal(calls.doubleTap.length, 1);
+  vence();
+  assert.equal(calls.tap.length, 1);
 });
 
-test('no es doble toque si pasan más de 300 ms o más de 30 px', () => {
-  const lento = banco();
-  lento.send('pointerdown', 1, 100, 100, 0); lento.send('pointerup', 1, 100, 100, 50);
-  lento.send('pointerdown', 1, 100, 100, 351); lento.send('pointerup', 1, 100, 100, 380);
-  assert.equal(lento.calls.doubleTap.length, 0);
-  assert.equal(lento.calls.tap.length, 2);
-
-  const lejos = banco();
-  lejos.send('pointerdown', 1, 100, 100, 0); lejos.send('pointerup', 1, 100, 100, 50);
-  lejos.send('pointerdown', 1, 140, 100, 100); lejos.send('pointerup', 1, 140, 100, 150);
-  assert.equal(lejos.calls.doubleTap.length, 0);
-});
-
-test('un arrastre entre dos toques los separa: no hay doble toque', () => {
-  const { calls, send } = banco();
-  send('pointerdown', 1, 100, 100, 0); send('pointerup', 1, 100, 100, 40);
-  send('pointerdown', 1, 100, 100, 80); send('pointermove', 1, 160, 100, 90); send('pointerup', 1, 160, 100, 100);
+test('no es doble toque si pasan más de 300 ms: el primero se entrega y el segundo queda pendiente', () => {
+  const { calls, send, vence } = banco();
+  send('pointerdown', 1, 100, 100, 0); send('pointerup', 1, 100, 100, 50);
+  send('pointerdown', 1, 100, 100, 351); send('pointerup', 1, 100, 100, 380);
   assert.equal(calls.doubleTap.length, 0);
+  assert.equal(calls.tap.length, 1, 'el primero salió al llegar el segundo');
+  vence();
+  assert.equal(calls.tap.length, 2);
+});
+
+test('el segundo toque tiene que acabar a 30 px o menos del primero, no solo empezar cerca', () => {
+  const { calls, send, vence } = banco();
+  send('pointerdown', 1, 100, 100, 0); send('pointerup', 1, 100, 100, 50);
+  send('pointerdown', 1, 125, 100, 100); send('pointerup', 1, 132, 100, 150);   // baja a 25 px, sube a 32 px
+  assert.equal(calls.doubleTap.length, 0);
+  assert.deepEqual(calls.tap, [[100, 100]]);
+  vence();
+  assert.equal(calls.tap.length, 2);
+});
+
+test('un segundo toque lejano (>30 px) vacía el pendiente en el pointerdown, antes de su propio toque', () => {
+  const { calls, send, vence } = banco();
+  send('pointerdown', 1, 100, 100, 0); send('pointerup', 1, 100, 100, 50);
+  send('pointerdown', 1, 140, 100, 100);
+  assert.deepEqual(calls.tap, [[100, 100]], 'el primero se entrega ya, en el pointerdown lejano');
+  send('pointerup', 1, 140, 100, 150);
+  assert.equal(calls.doubleTap.length, 0);
+  vence();
+  assert.deepEqual(calls.tap, [[100, 100], [140, 100]]);
+});
+
+test('un arrastre tras un toque vacía el pendiente al empezar el arrastre, no después', () => {
+  const { calls, send, vence } = banco();
+  send('pointerdown', 1, 100, 100, 0); send('pointerup', 1, 100, 100, 40);
+  send('pointerdown', 1, 100, 100, 80);
+  assert.equal(calls.tap.length, 0, 'un pointerdown cercano aún puede ser el segundo toque');
+  send('pointermove', 1, 130, 100, 90);
+  assert.deepEqual(calls.tap, [[100, 100]], 'el toque sale cuando empieza el arrastre');
+  assert.ok(calls.pan.length > 0);
+  send('pointerup', 1, 160, 100, 100);
+  assert.equal(calls.doubleTap.length, 0);
+  vence();
+  assert.equal(calls.tap.length, 1, 'no se entrega dos veces');
+});
+
+test('empezar una pinza vacía el pendiente', () => {
+  const { calls, send, vence } = banco();
+  send('pointerdown', 1, 100, 100, 0); send('pointerup', 1, 100, 100, 40);
+  send('pointerdown', 1, 100, 100, 80);
+  send('pointerdown', 2, 110, 100, 85);       // cerca del pendiente, pero es un segundo dedo: pinza
+  assert.deepEqual(calls.tap, [[100, 100]]);
+  vence();
+  assert.equal(calls.tap.length, 1);
+});
+
+test('destroy vacía el toque pendiente en vez de perderlo o entregarlo tarde', () => {
+  const { g, calls, send, vence } = banco();
+  send('pointerdown', 1, 100, 100, 0); send('pointerup', 1, 100, 100, 40);
+  g.destroy();
+  assert.deepEqual(calls.tap, [[100, 100]]);
+  vence();
+  assert.equal(calls.tap.length, 1);
+});
+
+test('doubleTapDelay 0 desactiva el doble toque y entrega cada toque al instante', () => {
+  const { calls, send, timers } = banco({ doubleTapDelay: 0 });
+  send('pointerdown', 1, 100, 100, 0); send('pointerup', 1, 100, 100, 50);
+  send('pointerdown', 1, 100, 100, 100); send('pointerup', 1, 100, 100, 150);
+  assert.equal(calls.tap.length, 2);
+  assert.equal(calls.doubleTap.length, 0);
+  assert.equal(timers.length, 0);
 });
 
 test('destroy quita los oyentes', () => {
@@ -575,16 +652,25 @@ test('los NPC se interpolan entre ticks: a medio tick están a medio camino', ()
   assert.ok(canvas.ctx.log.some((c) => c.n === 'arc' && cerca(c.args[0], fin.x, 0.5)), 'llega a su celda');
 });
 
-test('los edificios se dibujan en su celda y los candidatos solo cuando la capa está activa', () => {
+test('los edificios se dibujan en su celda y no hay etiquetas de candidatos con la capa apagada', () => {
   const m = montaje();
   m.game.settlement = { x: 3, y: 3, buildings: [{ id: 'hoguera', x: 3, y: 3, done: true, progress: 1 }, { id: 'choza', x: 5, y: 3, done: false, progress: 0.2 }] };
   m.canvas.ctx.log.length = 0;
   m.r.draw(m.game, m.cam, capas);
-  const sin = m.canvas.ctx.log.filter((c) => c.n === 'fillText').length;
-  assert.ok(m.canvas.ctx.log.length > 5);
-  m.canvas.ctx.log.length = 0;
-  m.r.draw(m.game, m.cam, { resources: null, candidates: true });
-  assert.ok(m.canvas.ctx.log.filter((c) => c.n === 'fillText').length >= sin);
+  const log = m.canvas.ctx.log;
+  const hoguera = m.cam.worldToScreen(3.5, 3.5);
+  const choza = m.cam.worldToScreen(5.5, 3.5);
+  const s = 16 * m.cam.zoom;
+  // la hoguera son dos círculos concéntricos en el centro de su celda, del color del fuego
+  const fuego = log.filter((c) => c.n === 'arc' && cerca(c.args[0], hoguera.x) && cerca(c.args[1], hoguera.y) && (cerca(c.args[2], s * 0.32) || cerca(c.args[2], s * 0.16)));
+  assert.equal(fuego.length, 2, 'hoguera');
+  // la choza (sin terminar) es un triángulo con el pico sobre el centro de su celda
+  assert.ok(log.some((c) => c.n === 'moveTo' && cerca(c.args[0], choza.x - s * 0.4)), 'choza: arranca a la izquierda del centro');
+  assert.ok(log.some((c) => c.n === 'lineTo' && cerca(c.args[0], choza.x) && cerca(c.args[1], choza.y - s * 0.4)), 'choza: pico sobre su celda');
+  assert.ok(!log.some((c) => c.n === 'lineTo' && cerca(c.args[0], hoguera.x) && cerca(c.args[1], hoguera.y - s * 0.4)), 'no hay choza sobre la hoguera');
+  const relleno = log.find((c) => c.n === 'fill' && c.fillStyle === '#8b5a2b');
+  assert.ok(relleno && cerca(relleno.alpha, 0.4), 'obra sin terminar a media opacidad');
+  assert.equal(log.filter((c) => c.n === 'fillText').length, 0, 'sin etiquetas con candidates: false');
 });
 
 test('la capa de candidatos marca sitios viables con su puntuación', () => {
@@ -603,6 +689,77 @@ test('la capa de candidatos marca sitios viables con su puntuación', () => {
   canvas.ctx.log.length = 0;
   r.draw(game, cam, { resources: null, candidates: true });
   assert.ok(canvas.ctx.log.filter((c) => c.n === 'fillText').length > 0, 'etiquetas de puntuación');
+});
+
+test('otra partida en el mismo renderer, con igual nº de celdas descubiertas y día, no dibuja el terreno de la anterior', () => {
+  const m = montaje();
+  m.r.draw(m.game, m.cam, capas);
+  assert.equal(rectCelda(m.terreno(), 3, 3).at(-1).fillStyle, cellColor('bosque', 3, 3));
+  const otra = escena();
+  otra.grid.at(3, 3).biome = 'montaña';          // otra semilla: mismo radio inicial, otro mundo
+  assert.equal(otra.discovery.size, m.discovery.size);
+  m.r.draw(otra.game, m.cam, capas);
+  assert.equal(rectCelda(m.terreno(), 3, 3).at(-1).fillStyle, cellColor('montaña', 3, 3));
+});
+
+test('el terreno no se reasigna (ni se borra) en cada repintado: el tamaño se fija una vez', () => {
+  const canvas = lienzoFalso();
+  let asignaciones = 0;
+  const r = createRenderer(canvas, {
+    now: () => 0,
+    createCanvas: () => {
+      const c = lienzoFalso();
+      let w = 0, h = 0;
+      Object.defineProperty(c, 'width', { get: () => w, set: (v) => { asignaciones++; w = v; } });
+      Object.defineProperty(c, 'height', { get: () => h, set: (v) => { asignaciones++; h = v; } });
+      return c;
+    },
+  });
+  const cam = createCamera({ viewW: 440, viewH: 956, worldW: W, worldH: W, tile: 16 });
+  r.resize(440, 956, 1);
+  const { game } = escena();
+  r.draw(game, cam, capas);
+  const primeras = asignaciones;
+  assert.equal(primeras, 2);
+  r.invalidateTerrain(); r.draw(game, cam, capas);
+  r.draw(game, cam, { resources: 'leña', candidates: false });
+  assert.equal(asignaciones, primeras);
+});
+
+test('un NPC que muere y cuyo id reaparece en otro sitio no se desliza desde su posición vieja', () => {
+  let t = 0;
+  const canvas = lienzoFalso();
+  const r = createRenderer(canvas, { createCanvas: lienzoFalso, now: () => t });
+  const cam = createCamera({ viewW: 440, viewH: 956, worldW: W, worldH: W, tile: 16 });
+  r.resize(440, 956, 1);
+  const { game } = escena();
+  r.draw(game, cam, capas);
+  game.band.npcs[0].alive = false;
+  r.draw(game, cam, capas);
+  game.band.npcs[0].alive = true; game.band.npcs[0].x = 8; game.clock.tick = 7;
+  t = 100;
+  canvas.ctx.log.length = 0;
+  r.draw(game, cam, capas);
+  const destino = cam.worldToScreen(8.5, 3.5);
+  assert.ok(canvas.ctx.log.some((c) => c.n === 'arc' && cerca(c.args[0], destino.x, 0.5)), 'aparece ya en su sitio');
+});
+
+test('una partida nueva con ids repetidos no hace deslizar a los NPC desde la anterior', () => {
+  let t = 0;
+  const canvas = lienzoFalso();
+  const r = createRenderer(canvas, { createCanvas: lienzoFalso, now: () => t });
+  const cam = createCamera({ viewW: 440, viewH: 956, worldW: W, worldH: W, tile: 16 });
+  r.resize(440, 956, 1);
+  const a = escena();
+  a.game.clock.tick = 3;
+  r.draw(a.game, cam, capas);
+  const b = escena();
+  b.game.band.npcs[0].x = 8; b.game.clock.tick = 0;
+  t = 100;
+  canvas.ctx.log.length = 0;
+  r.draw(b.game, cam, capas);
+  const destino = cam.worldToScreen(8.5, 3.5);
+  assert.ok(canvas.ctx.log.some((c) => c.n === 'arc' && cerca(c.args[0], destino.x, 0.5)));
 });
 
 // --- anti-fuga: lo que el renderer decide pintar sale solo de discovery ----------------------

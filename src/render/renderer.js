@@ -6,7 +6,9 @@ import { RESOURCES } from '../world/resources.js';
 import { MS_POR_TICK } from '../game.js';
 import { UNKNOWN_COLOR, RESOURCE_TINTS, cellColor, drawNpc, drawBuilding } from './sprites.js';
 
-export const TERRAIN_CELL_PX = 8;     // resolución del lienzo de terreno: un cuarto de lo que se ve al máximo zoom
+// Resolución del lienzo de terreno: fija, 8 px por celda. Se estira al componerlo (a zoom 4 una celda mide
+// 64 px CSS, unos 192 px de dispositivo a dpr 3), de modo que el terreno cuesta lo mismo con cualquier dpr.
+export const TERRAIN_CELL_PX = 8;
 const ALFA_MAX_TINTE = 0.75;
 
 function lienzoNuevo(canvas) {
@@ -14,13 +16,15 @@ function lienzoNuevo(canvas) {
   return doc.createElement('canvas');
 }
 
+// Hay que llamar a resize(cssW, cssH, dpr) antes del primer draw: hasta entonces cssW/cssH son las dimensiones
+// en píxeles de dispositivo del lienzo, no las CSS.
 export function createRenderer(canvas, opts = {}) {
   const ctx = canvas.getContext('2d');
   const crear = opts.createCanvas ?? (() => lienzoNuevo(canvas));
   const ahora = opts.now ?? (() => globalThis.performance.now());
 
   let cssW = canvas.width, cssH = canvas.height, dpr = 1;
-  let terreno = null, terrenoCtx = null, terrenoClave = null, sucio = true;
+  let terreno = null, terrenoCtx = null, terrenoClave = null, terrenoDiscovery = null, sucio = true;
   let candidatos = { clave: null, sitios: [] };
   const caminantes = new Map();   // id -> { de, a, tick, desde } para interpolar entre ticks
 
@@ -32,8 +36,9 @@ export function createRenderer(canvas, opts = {}) {
   function pintarTerreno(game, cam, capa) {
     const { worldW, worldH } = cam;
     if (!terreno) { terreno = crear(); terrenoCtx = terreno.getContext('2d'); }
-    terreno.width = worldW * TERRAIN_CELL_PX;
-    terreno.height = worldH * TERRAIN_CELL_PX;
+    // Asignar width/height reasigna y borra el lienzo: solo si cambia el tamaño. Cada celda se sobrescribe entera.
+    if (terreno.width !== worldW * TERRAIN_CELL_PX) terreno.width = worldW * TERRAIN_CELL_PX;
+    if (terreno.height !== worldH * TERRAIN_CELL_PX) terreno.height = worldH * TERRAIN_CELL_PX;
     const t = terrenoCtx, P = TERRAIN_CELL_PX;
     const max = capa ? RESOURCES[capa].max : 1;
     for (let y = 0; y < worldH; y++) {
@@ -88,6 +93,8 @@ export function createRenderer(canvas, opts = {}) {
     draw(game, cam, layers) {
       const capa = layers?.resources ?? null;
       const clave = claveTerreno(game, capa, cam);
+      // Otra partida (o una carga) trae otro discovery: ni el terreno ni los caminantes de la anterior valen.
+      if (game.discovery !== terrenoDiscovery) { terrenoDiscovery = game.discovery; caminantes.clear(); sucio = true; }
       if (sucio || clave !== terrenoClave) { pintarTerreno(game, cam, capa); terrenoClave = clave; sucio = false; }
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -122,12 +129,15 @@ export function createRenderer(canvas, opts = {}) {
       }
 
       const t = ahora();
+      const vivos = new Set();
       for (const npc of game.band.npcs) {
         if (!npc.alive) continue;
+        vivos.add(npc.id);
         const pos = posicion(npc, game, t);
         const p = cam.worldToScreen(pos.x + 0.5, pos.y + 0.5);
         drawNpc(ctx, { ...npc, heading: pos.heading }, p.x, p.y, s);
       }
+      for (const id of caminantes.keys()) if (!vivos.has(id)) caminantes.delete(id);
     },
   };
 }

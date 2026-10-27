@@ -14,12 +14,17 @@ export function classifyPointer(samples) {
   return lejos > TAP_THRESHOLD ? 'drag' : 'tap';
 }
 
-export function createGestures(el, handlers) {
+// opts.doubleTapDelay: cuánto espera un toque a ver si llega un segundo (ms). 0 desactiva el doble toque y
+// entrega cada toque al instante. opts.setTimer / clearTimer: temporizador inyectable para probarlo sin reloj.
+export function createGestures(el, handlers, opts = {}) {
+  const retardo = opts.doubleTapDelay ?? DOUBLE_TAP_MS;
+  const setTimer = opts.setTimer ?? ((fn, ms) => globalThis.setTimeout(fn, ms));
+  const clearTimer = opts.clearTimer ?? ((id) => globalThis.clearTimeout(id));
   const { onPan, onPinch, onTap, onDoubleTap } = handlers;
   const punteros = new Map();   // pointerId -> { x, y, samples, arrastre, ultimoX, ultimoY }
   let modo = 'libre';           // 'libre' | 'uno' | 'pinza' | 'inerte'
   let distancia = 0;
-  let ultimoToque = null;       // { x, y, t }
+  let pendiente = null;         // toque en espera de un posible segundo: { x, y, t, timer }
 
   const origen = () => el.getBoundingClientRect?.() ?? { left: 0, top: 0 };
   const punto = (e) => { const o = origen(); return { x: e.clientX - o.left, y: e.clientY - o.top }; };
@@ -28,6 +33,8 @@ export function createGestures(el, handlers) {
   function abajo(e) {
     el.setPointerCapture?.(e.pointerId);
     const { x, y } = punto(e);
+    // Un dedo lejos del toque pendiente no puede ser su pareja: el toque sale ya, antes de lo que venga.
+    if (pendiente && (punteros.size >= 1 || Math.hypot(x - pendiente.x, y - pendiente.y) > DOUBLE_TAP_PX)) entregar();
     punteros.set(e.pointerId, { x, y, samples: [{ x, y, t: e.timeStamp }], arrastre: false, ultimoX: x, ultimoY: y });
     if (punteros.size >= 2) { modo = 'pinza'; distancia = dosDedos().d; }
     else modo = 'uno';
@@ -44,7 +51,7 @@ export function createGestures(el, handlers) {
       distancia = d;
     } else if (modo === 'uno') {
       p.samples.push({ x, y, t: e.timeStamp });
-      if (!p.arrastre && classifyPointer(p.samples) === 'drag') p.arrastre = true;
+      if (!p.arrastre && classifyPointer(p.samples) === 'drag') { p.arrastre = true; entregar(); }
       if (p.arrastre) { onPan?.(x - p.ultimoX, y - p.ultimoY); p.ultimoX = x; p.ultimoY = y; }
     }
     // 'inerte': el dedo que queda no mueve nada hasta el siguiente pointerdown.
@@ -59,7 +66,6 @@ export function createGestures(el, handlers) {
     if (modo === 'uno') {
       p.samples.push({ x, y, t: e.timeStamp });
       if (classifyPointer(p.samples) === 'tap') toque(x, y, e.timeStamp);
-      else ultimoToque = null;
     }
     if (punteros.size === 0) modo = 'libre';
   }
@@ -67,18 +73,29 @@ export function createGestures(el, handlers) {
   function cancela(e) {
     if (!punteros.delete(e.pointerId)) return;
     modo = modo === 'pinza' ? 'inerte' : punteros.size === 0 ? 'libre' : modo;
-    ultimoToque = null;
+  }
+
+  // Entrega el toque que esperaba (si lo hay) y deja de esperar.
+  function entregar() {
+    if (!pendiente) return;
+    const { x, y, timer } = pendiente;
+    pendiente = null;
+    clearTimer(timer);
+    onTap?.(x, y);
   }
 
   function toque(x, y, t) {
-    const previo = ultimoToque;
-    if (previo && t - previo.t <= DOUBLE_TAP_MS && Math.hypot(x - previo.x, y - previo.y) <= DOUBLE_TAP_PX) {
-      ultimoToque = null;
+    if (retardo <= 0) { onTap?.(x, y); return; }
+    const previo = pendiente;
+    if (previo && t - previo.t <= retardo && Math.hypot(x - previo.x, y - previo.y) <= DOUBLE_TAP_PX) {
+      pendiente = null;
+      clearTimer(previo.timer);
       onDoubleTap?.(x, y);
-    } else {
-      ultimoToque = { x, y, t };
-      onTap?.(x, y);
+      return;
     }
+    entregar();
+    pendiente = { x, y, t, timer: null };
+    pendiente.timer = setTimer(entregar, retardo);
   }
 
   if (el.style) el.style.touchAction = 'none';
@@ -88,6 +105,7 @@ export function createGestures(el, handlers) {
   return {
     destroy() {
       for (const [tipo, fn] of oyentes) el.removeEventListener(tipo, fn);
+      entregar();
       punteros.clear();
     },
   };
