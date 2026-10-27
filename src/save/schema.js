@@ -135,6 +135,27 @@ export function lineaBase(seed, ancho, alto, tick, virgen) {
 }
 lineaBase.tamano = () => recuerdos.size;
 
+// Pone la memoria de lineaBase al día de la partida, para que guardar no tenga que ponerse al día dentro de
+// un fotograma.
+//
+// POR QUÉ: medido, el primer autoguardado de una partida nueva paraba la página 283-333 ms dentro de un
+// solo fotograma, veinte fotogramas seguidos perdidos. Serializar necesita la línea base al tick de ahora, y
+// con la memoria en el tick 0 lineaBase tenía que reponer 120 ticks de golpe sobre las 9216 celdas. La
+// pantalla de slots calienta en tiempo libre, pero solo hasta el tick que el slot tenía guardado, y el
+// jugador pulsa «Continuar» antes de que el hueco llegue.
+//
+// Llamarla a menudo (una vez por hueco libre) reparte ese coste en trozos de milisegundos que además
+// decrecen solos: las celdas dejan de cambiar en un par de días y la reposición se queda sin nada que hacer.
+//
+// NUNCA por delante de la partida: pedir a lineaBase un tick MENOR que el recordado le obliga a generar el
+// mundo entero otra vez, que es medio segundo. Por eso el tick que se pide es siempre el del reloj.
+// En el tick 0 la rejilla de la partida es virgen (nadie ha gastado ni repuesto nada), así que sirve de
+// línea base tal cual y no hay que generar un segundo mundo idéntico al que createGame acaba de generar.
+export function calentarLinea(game) {
+  const { seed, grid, clock } = game;
+  lineaBase(seed, grid.width, grid.height, clock.tick, clock.tick === 0 ? grid : undefined);
+}
+
 function diferenciasDeRecursos(game) {
   const { grid, seed } = game;
   const base = lineaBase(seed, grid.width, grid.height, game.clock.tick);

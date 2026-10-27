@@ -2,6 +2,7 @@
 // renombrar y borrar, y mientras tanto calienta la memoria de lineaBase para que abrir un slot no congele el hilo.
 // Lo puro (acciones, nombres, qué calentar, la miniatura) se exporta suelto y se prueba en Node; lo que toca el
 // DOM solo se monta con mountSlotScreen y se prueba en el navegador.
+import { h, boton } from './dom.js';
 import { BIOME_COLORS, UNKNOWN_COLOR } from '../render/sprites.js';
 import { lineaBase } from '../save/schema.js';
 import { createGame } from '../game.js';
@@ -73,21 +74,6 @@ function cuandoHayHueco(tarea) {
 }
 
 // --- El DOM --------------------------------------------------------------------------------------
-
-function h(etiqueta, props = {}, ...hijos) {
-  const el = globalThis.document.createElement(etiqueta);
-  for (const [k, v] of Object.entries(props)) {
-    if (v === undefined || v === null || v === false) continue;
-    if (k === 'class') el.className = v;
-    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
-    else if (k in el && k !== 'type') el[k] = v;
-    else el.setAttribute(k, v === true ? '' : v);
-  }
-  for (const hijo of hijos.flat()) if (hijo !== undefined && hijo !== null && hijo !== false) el.append(hijo);
-  return el;
-}
-
-const boton = (texto, props) => h('button', { type: 'button', ...props, class: `btn ${props.class ?? ''}`.trim() }, texto);
 
 export function mountSlotScreen(root, store, handlers = {}) {
   const calentar = handlers.warm ?? lineaBase;

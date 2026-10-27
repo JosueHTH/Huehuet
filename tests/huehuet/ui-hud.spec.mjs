@@ -41,6 +41,12 @@ const presionado = async (page, nombre) => {
 
 const ANCHO = 440;
 const ALTO = 956;
+// El enganche alto se pide al 90%, pero la hoja no pasa de donde empieza la franja superior: el 90% de 956
+// son 860 px y dejan 96 para una franja que mide 121, así que al 90% la hoja le cortaba la segunda línea
+// («7 habitantes · Nómadas» partido por la mitad, visible en las capturas). El enganche sigue siendo 0.9
+// —lo dice data-snap— y lo que cambia es hasta dónde llega de verdad. Lo afirma, por el otro lado, la
+// prueba «la hoja abierta del todo no tapa la franja superior» de ui-game.spec.mjs.
+const ALTO_MAXIMO_HOJA = 832;
 // La semilla 1 tiene 8 sitios candidatos a partir del tick 108 (medido con stepGame en Node, reproducible).
 const SEMILLA_CON_SITIOS = 1;
 const TICKS_HASTA_SITIOS = 108;
@@ -166,8 +172,9 @@ test('la hoja engancha al 45% y al 90% de la altura', async ({ page }) => {
   const asa = await caja(page, '.sheet.open .sheet-grab');
   await arrastrar(page, { desde: { x: ANCHO / 2, y: asa.y + asa.height / 2 }, hasta: { x: ANCHO / 2, y: asa.y + asa.height / 2 - 320 } });
   const alto = await caja(page, '.sheet.open');
-  assert.ok(Math.abs((ALTO - alto.y) - ALTO * 0.9) < 4,
-    `tras subirla se ve ${ALTO - alto.y} px, no el 90% (${ALTO * 0.9})`);
+  assert.ok(Math.abs((ALTO - alto.y) - ALTO_MAXIMO_HOJA) < 4,
+    `tras subirla se ve ${ALTO - alto.y} px, no el tope de ${ALTO_MAXIMO_HOJA} (el 90% serían ${ALTO * 0.9})`);
+  assert.equal(await hoja.getAttribute('data-snap'), '0.9', 'el enganche alto no quedó marcado como 0.9');
 
   // Y bajando vuelve al 45%, no se queda donde el dedo la dejó.
   const asa2 = await caja(page, '.sheet.open .sheet-grab');
@@ -692,8 +699,8 @@ test('el desglose abre al 90% de la pantalla, no a media', async ({ page }) => {
   await page.locator('.candidate').first().click();
   assert.equal(await page.locator('.site-breakdown').count(), 1, 'pulsar un candidato no abrió su desglose');
   const alta = await caja(page, '.sheet.open');
-  assert.ok(Math.abs((ALTO - alta.y) - ALTO * 0.9) < 4,
-    `el desglose abre a ${ALTO - alta.y} px y no al 90% (${ALTO * 0.9})`);
+  assert.ok(Math.abs((ALTO - alta.y) - ALTO_MAXIMO_HOJA) < 4,
+    `el desglose abre a ${ALTO - alta.y} px y no al tope de ${ALTO_MAXIMO_HOJA} (el 90% serían ${ALTO * 0.9})`);
   assert.equal(await page.locator('.sheet.open').getAttribute('data-snap'), '0.9',
     'la hoja del desglose no quedó enganchada al 90%');
 });

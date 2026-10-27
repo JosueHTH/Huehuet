@@ -385,3 +385,96 @@ test('la banda llega a asentarse jugando a x10 y la crónica lo cuenta', async (
   await page.getByRole('button', { name: /^crónica$/i }).click();
   await expect(page.locator('.sheet.open')).toContainText(/levantará su aldea|asentarse/i);
 });
+
+// --- Lo que cuesta un fotograma ------------------------------------------------------------------
+// Medido antes de arreglarlo: el primer autoguardado paraba la página 333 ms —veinte fotogramas— porque
+// serializar necesita la línea base del mundo y la memoria de lineaBase estaba fría, así que generaba el
+// mundo OTRA VEZ dentro del fotograma. El mundo ya está generado: la partida lo tiene en la mano.
+test('ningún fotograma se come la pantalla, ni el del primer autoguardado', async ({ page }) => {
+  test.setTimeout(90000);
+  await iniciarPartida(page, { semilla: SEMILLA });
+  await elegirVelocidad(page, 'x10');
+  const medida = await page.evaluate(() => new Promise((listo) => {
+    const largos = [];
+    const inicio = performance.now();
+    let prev = null;
+    let dias = 0;
+    const paso = (t) => {
+      if (prev !== null && t - prev > 60) largos.push({ dt: Math.round(t - prev), dia: window.__huehuet.game.clock.day });
+      prev = t;
+      dias = window.__huehuet.game.clock.day;
+      if (t - inicio < 12000) requestAnimationFrame(paso);
+      else listo({ largos, dias, peor: largos.reduce((a, l) => Math.max(a, l.dt), 0) });
+    };
+    requestAnimationFrame(paso);
+  }));
+  assert.ok(medida.dias >= 6, `en 12 s a x10 solo se jugaron ${medida.dias} días: el autoguardado de los 5 días no llegó a ocurrir`);
+  assert.ok(medida.peor < 120,
+    `el peor fotograma duró ${medida.peor} ms (${JSON.stringify(medida.largos)}): la página se para a la vista del jugador`);
+});
+
+// --- Deuda de interfaz que la Task 15 dejó anotada -----------------------------------------------
+
+// T15-g: con la hoja abierta a pantalla casi entera, su borde superior cortaba la segunda línea de la
+// franja («7 habitantes · Nómadas» quedaba partido por la mitad). Se ve en las capturas de la Task 15.
+test('la hoja abierta del todo no tapa la franja superior', async ({ page }) => {
+  await iniciarPartida(page, { semilla: SEMILLA, ticks: TICKS_HASTA_SITIOS });
+  await page.getByRole('button', { name: 'Mundo', exact: true }).click();
+  await page.locator('.candidate').first().click();
+  await page.waitForTimeout(150);
+  const franja = await page.locator('.hud-top').boundingBox();
+  const hoja = await page.locator('.sheet.open').boundingBox();
+  assert.ok(hoja.y >= franja.y + franja.height,
+    `la hoja empieza en y=${Math.round(hoja.y)} y la franja acaba en ${Math.round(franja.y + franja.height)}: le corta la segunda línea`);
+});
+
+// Defecto que cazó una captura: abrir una hoja, desplazarla, cerrarla y abrir OTRA dejaba la nueva a media
+// altura. setContent pone el desplazamiento a cero, pero lo hace con la hoja oculta —alto cero, nada que
+// desplazar— y al abrirla el navegador restaura el desplazamiento anterior.
+test('una hoja recién abierta empieza por el principio, aunque la anterior quedara desplazada', async ({ page }) => {
+  await iniciarPartida(page, { semilla: SEMILLA, ticks: TICKS_HASTA_SITIOS });
+  await page.getByRole('button', { name: 'Banda', exact: true }).click();
+  await page.locator('.sheet-body').evaluate((e) => { e.scrollTop = 400; });
+  assert.ok(await page.locator('.sheet-body').evaluate((e) => e.scrollTop) > 0, 'la hoja no se dejó desplazar');
+  await page.getByRole('button', { name: /cerrar/i }).click();
+  await page.getByRole('button', { name: 'Crónica', exact: true }).click();
+  await page.waitForTimeout(150);
+  const desplazada = await page.locator('.sheet-body').evaluate((e) => e.scrollTop);
+  assert.equal(desplazada, 0, `la crónica abrió desplazada ${desplazada} px: el jugador se pierde el principio`);
+});
+
+// T15-d: el día 4 la banda no lleva nada encima y «Lo que llevan encima» gastaba un tercio de la hoja al
+// 45% en seis ceros, cortando la primera ficha de NPC.
+test('la hoja de la banda no gasta media pantalla en seis ceros', async ({ page }) => {
+  await iniciarPartida(page, { semilla: SEMILLA });
+  const vacio = await page.evaluate(() => Object.values(window.__huehuet.game.band.inventory).every((v) => v === 0));
+  assert.equal(vacio, true, 'la banda ya lleva algo encima el día 0: esta prueba no mide lo que cree');
+  await page.getByRole('button', { name: 'Banda', exact: true }).click();
+  await page.waitForTimeout(150);
+  assert.equal(await page.locator('.inventario li').count(), 0,
+    'con todo a cero se siguen pintando las seis filas del inventario');
+  assert.equal(await page.locator('.inventario-vacio').count(), 1, 'no se dice que no llevan nada');
+  // Y la primera ficha de NPC tiene que empezar dentro de la hoja abierta al 45%.
+  const hoja = await page.locator('.sheet.open').boundingBox();
+  const ficha = await page.locator('.npc-card').first().boundingBox();
+  assert.ok(ficha.y < hoja.y + hoja.height,
+    `la primera ficha empieza en y=${Math.round(ficha.y)}, fuera de la hoja (acaba en ${Math.round(hoja.y + hoja.height)})`);
+});
+
+// T15-e: medido en la Task 15, 5 de 7 entradas de la crónica eran «X descubrió N lugares nuevos» y ahogaban
+// los hitos. No hace falta tocar la simulación: el panel ya recibe el tipo y la marca de hito.
+test('la crónica puede quedarse solo con los hitos', async ({ page }) => {
+  await iniciarPartida(page, { semilla: SEMILLA, ticks: TICKS_HASTA_SITIOS });
+  await page.getByRole('button', { name: 'Crónica', exact: true }).click();
+  const todas = await page.locator('.cronica-entrada').count();
+  const hitos = await page.locator('.cronica-hito').count();
+  assert.ok(todas > hitos, `la crónica trae ${todas} entradas y ${hitos} hitos: no hay rutina que esconder`);
+  const conmutador = page.getByRole('button', { name: /solo.*hitos/i });
+  assert.equal(await conmutador.count(), 1, 'la crónica no ofrece quedarse con los hitos');
+  await conmutador.click();
+  assert.equal(await page.locator('.cronica-entrada').count(), hitos,
+    'el conmutador no dejó solo los hitos');
+  assert.equal(await conmutador.getAttribute('aria-pressed'), 'true', 'el conmutador no queda marcado');
+  await conmutador.click();
+  assert.equal(await page.locator('.cronica-entrada').count(), todas, 'no se puede volver al relato entero');
+});

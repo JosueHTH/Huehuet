@@ -1,5 +1,6 @@
-// Dos ayudantes de DOM que comparten el HUD, las hojas y los paneles. No saben nada del juego.
-// (slots.js lleva su propia copia de `h` desde la Task 14; unificarlas es trabajo de limpieza, no de esta tarea.)
+// Los ayudantes de DOM que comparten la pantalla de partidas, el HUD, las hojas y los paneles. No saben
+// nada del juego. Hubo dos copias de `h` (esta y la de slots.js, de la Task 14) hasta que la Task 16 las
+// unificó: dos copias de lo mismo divergen en silencio, y la de slots.js ya se había quedado sin `dataset`.
 
 export function h(etiqueta, props = {}, ...hijos) {
   const el = globalThis.document.createElement(etiqueta);

@@ -74,6 +74,11 @@ export function createSheet(root, opts = {}) {
       el.classList.add('open');
       el.dataset.snap = String(snap);
       colocar(snap * alturaVista());
+      // Y DESPUÉS de darle alto. setContent también lo pone a cero, pero lo hace con la hoja oculta: sin
+      // alto no hay nada que desplazar, y al abrirla el navegador restaura el desplazamiento de la hoja
+      // anterior. Medido en una captura: cerrar la hoja de la banda desplazada y abrir la crónica la dejaba
+      // 400 px más abajo, empezando a media frase.
+      cuerpo.scrollTop = 0;
     },
 
     close() {

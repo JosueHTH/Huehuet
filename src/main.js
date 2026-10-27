@@ -27,6 +27,7 @@ import { createSheet } from './ui/sheets.js';
 import { renderBandPanel, renderChroniclePanel, renderWorldPanel, renderSiteBreakdown, renderNpcCard, decisionDeSitio } from './ui/panels.js';
 import { candidateSites } from './tribe/sitescore.js';
 import { advanceGame } from './game.js';
+import { calentarLinea } from './save/schema.js';
 
 const lienzo = document.getElementById('mundo');
 const raiz = document.getElementById('slots');
@@ -64,6 +65,7 @@ let gestos = null;
 let partida = null;      // { slotId, game, camera, hud, hoja, capas, velocidad, seguir, diaGuardado }
 let fotogramaId = 0;
 let marca = 0;           // timeStamp del fotograma anterior; 0 quiere decir "vuelve a empezar"
+let calentando = false;  // hay un calentado de la línea base pidiendo hueco
 
 // --- Dibujar y dimensionar ----------------------------------------------------------------------
 
@@ -97,6 +99,18 @@ function encuadrar() {
   camera.centerOn(game.band.x + 0.5, game.band.y + 0.5);
 }
 
+// Pone al día la línea base del mundo en el primer hueco libre, y nunca más de una tarea a la vez. Es lo
+// que convierte el coste del autoguardado en trozos de milisegundos en vez de un parón de 300 ms dentro de
+// un fotograma (ver calentarLinea). No es necesaria para guardar: si no llega a correr, guardar se pone al
+// día él mismo; solo que entonces se nota.
+function calentarEnHueco() {
+  if (calentando || !partida) return;
+  calentando = true;
+  const tarea = () => { calentando = false; if (partida) calentarLinea(partida.game); };
+  if (typeof globalThis.requestIdleCallback === 'function') globalThis.requestIdleCallback(tarea, { timeout: 500 });
+  else globalThis.setTimeout(tarea, 0);
+}
+
 // Alcanza a la banda sin saltos: se acerca una fracción del camino por fotograma.
 function seguirBanda(dtMs) {
   const { camera, game } = partida;
@@ -113,6 +127,7 @@ function seguirBanda(dtMs) {
 function avanzar(dtMs) {
   if (!partida) return 0;
   const ticks = advanceGame(partida.game, dtMs, partida.velocidad);
+  if (ticks > 0) calentarEnHueco();
   if (partida.seguir) seguirBanda(dtMs);
   autoguardarSiToca();
   refrescar();
@@ -284,6 +299,10 @@ function entrar(slotId, game) {
     seguir: true,
     diaGuardado: game.clock.day,
   };
+
+  // Antes del primer fotograma, no dentro de uno. En el tick 0 cuesta lo que copiar la rejilla, porque el
+  // mundo ya está generado; a partir de ahí el bucle lo va poniendo al día en los huecos libres.
+  calentarLinea(game);
 
   dimensionar();
   refrescar();

@@ -48,6 +48,17 @@ export function renderNpcCard(npc) {
       `Cautela ${unDecimal(t.cautela ?? 0)} · Audacia ${unDecimal(t.audacia ?? 0)} · Sabiduría ${unDecimal(t.sabiduria ?? 0)}`));
 }
 
+// Solo lo que de verdad llevan. Medido en la Task 15: el día 4 los seis recursos están a cero y esas seis
+// filas se comían un tercio de la hoja abierta al 45%, cortando la primera ficha de NPC. Seis ceros no son
+// información: lo que el jugador necesita saber es que no llevan nada, y eso se dice en una línea.
+export function inventario(inv = {}) {
+  const llevan = Object.values(RESOURCES).filter((r) => (inv[r.id] ?? 0) > 0);
+  if (llevan.length === 0) return h('p', { class: 'inventario-vacio sheet-nota' }, 'No llevan nada encima todavía.');
+  return h('ul', { class: 'inventario' }, llevan.map((r) => h('li', { dataset: { recurso: r.id } },
+    h('span', { class: 'inv-label' }, r.label),
+    h('b', { class: 'inv-valor' }, unDecimal(inv[r.id] ?? 0)))));
+}
+
 export function renderBandPanel(game) {
   const vivos = livingNpcs(game.band);
   const presion = bandPressure(game.band, { season: game.clock.season });
@@ -58,9 +69,7 @@ export function renderBandPanel(game) {
       ? `Asentada en ${lugar(game.band)} desde el día ${game.settlement?.foundedDay ?? 0}.`
       : `Caminando${game.band.site ? ` hacia ${lugar(game.band.site)}` : ', aún sin destino'}. Con el apremio al ${porcentaje(presion)} aceptarían un sitio de ${entero(acceptanceThreshold(presion))} puntos.`),
     h('h3', { class: 'sheet-sub' }, 'Lo que llevan encima'),
-    h('ul', { class: 'inventario' }, Object.values(RESOURCES).map((r) => h('li', { dataset: { recurso: r.id } },
-      h('span', { class: 'inv-label' }, r.label),
-      h('b', { class: 'inv-valor' }, unDecimal(game.band.inventory[r.id] ?? 0))))),
+    inventario(game.band.inventory),
     h('h3', { class: 'sheet-sub' }, 'Quiénes son'),
     h('ul', { class: 'npc-lista' }, vivos.map((npc) => h('li', { class: 'npc-row' }, renderNpcCard(npc)))));
 }
@@ -69,13 +78,36 @@ export function renderBandPanel(game) {
 
 export const ENTRADAS_VISIBLES = 120;
 
+// El relato rutinario ahoga los hitos: medido en la Task 15, 5 de cada 7 entradas eran «X descubrió N
+// lugares nuevos». No hace falta tocar la simulación para arreglarlo, porque la crónica ya marca sus hitos
+// (`keep`): basta con dejar al jugador quedarse solo con ellos. El conmutador vive en el panel y se recuerda
+// mientras la hoja esté abierta.
 export function renderChroniclePanel(game) {
   const entradas = recent(game.chronicle, ENTRADAS_VISIBLES);
   if (entradas.length === 0) return h('p', { class: 'chronicle-panel sheet-vacio' }, 'Todavía no ha pasado nada que contar.');
-  return h('div', { class: 'chronicle-panel' },
-    h('ul', { class: 'cronica' }, entradas.map((e) => h('li', { class: `cronica-entrada${e.keep ? ' cronica-hito' : ''}`, dataset: { tipo: e.type } },
-      h('span', { class: 'cronica-dia' }, `Día ${e.day}`),
-      h('p', { class: 'cronica-texto' }, e.text)))));
+  const hitos = entradas.filter((e) => e.keep);
+  const caja = h('div', { class: 'chronicle-panel' });
+  let soloHitos = false;
+
+  const entrada = (e) => h('li', { class: `cronica-entrada${e.keep ? ' cronica-hito' : ''}`, dataset: { tipo: e.type } },
+    h('span', { class: 'cronica-dia' }, `Día ${e.day}`),
+    h('p', { class: 'cronica-texto' }, e.text));
+
+  function pintar() {
+    const visibles = soloHitos ? hitos : entradas;
+    caja.replaceChildren(
+      h('div', { class: 'cronica-filtro' },
+        conmutador(`Solo los hitos (${hitos.length})`, soloHitos, {
+          class: 'cronica-solo-hitos',
+          onclick: () => { soloHitos = !soloHitos; pintar(); },
+        })),
+      visibles.length === 0
+        ? h('p', { class: 'sheet-vacio' }, 'Todavía no hay ningún hito que contar.')
+        : h('ul', { class: 'cronica' }, visibles.map(entrada)));
+  }
+
+  pintar();
+  return caja;
 }
 
 // --- El mundo -----------------------------------------------------------------------------------

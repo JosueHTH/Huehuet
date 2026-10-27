@@ -157,7 +157,11 @@ html, body {
   z-index: 2;
   display: flex;
   flex-direction: column;
-  max-height: 90dvh;
+  /* El tope no es el 90% de la pantalla sino lo que queda bajo la franja superior: al 90% el borde de la
+     hoja caía sobre la segunda línea de la franja y cortaba «7 habitantes · Nómadas» por la mitad (T15-g).
+     --franja es lo que la franja ocupa de verdad, área segura incluida. */
+  --franja: calc(var(--safe-top) + 70px);   /* 67 px miden sus dos líneas con sus rellenos, y un pelo de aire */
+  max-height: min(90dvh, calc(100dvh - var(--franja)));
   pointer-events: auto;
   background: var(--surface);
   border-top: 1px solid var(--line);
@@ -297,3 +301,8 @@ html, body {
 .site-disidencia { margin: 8px 0 0; font-size: 14px; color: var(--warn); }
 .site-ultima { margin-top: 14px; }
 .site-ultima .site-motivo { margin: 0; font-size: 15px; font-style: italic; }
+
+/* El filtro de la crónica: quedarse solo con los hitos cuando la rutina los ahoga (T15-e). */
+.cronica-filtro { display: flex; margin-bottom: 12px; }
+.cronica-filtro .btn { flex: 1 1 auto; }
+.inventario-vacio { margin: 0; }
