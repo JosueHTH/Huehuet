@@ -295,4 +295,5 @@ html, body {
 .voto-nota { font-weight: 700; font-variant-numeric: tabular-nums; }
 .voto-anciano { font-size: 11px; color: var(--muted); }
 .site-disidencia { margin: 8px 0 0; font-size: 14px; color: var(--warn); }
+.site-ultima { margin-top: 14px; }
 .site-ultima .site-motivo { margin: 0; font-size: 15px; font-style: italic; }

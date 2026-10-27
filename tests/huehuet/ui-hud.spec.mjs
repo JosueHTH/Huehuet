@@ -656,12 +656,14 @@ test('la franja dice la hora de la simulación, no una hora congelada', async ({
   await iniciarPartida(page, { semilla: SEMILLA_CON_SITIOS, ticks: TICKS_HASTA_SITIOS });
   const hora = await page.evaluate(() => window.__huehuet.game.clock.hour);
   assert.notEqual(hora, 0, 'a estas alturas el reloj no debería estar en la hora 0: la prueba no afirma nada');
-  assert.equal(await texto(page, '.hud-hora'), `${String(hora).padStart(2, '0')}:00`);
+  assert.equal(await texto(page, '.hud-hora'), `${String(hora).padStart(2, '0')}:00`,
+    `el reloj va por la hora ${hora} y la franja no la dice`);
   // Y se mueve con el reloj: cinco horas más son otra hora en la franja.
   await avanzarTicks(page, 5);
   const despues = await page.evaluate(() => window.__huehuet.game.clock.hour);
   assert.notEqual(despues, hora, 'cinco horas no movieron el reloj');
-  assert.equal(await texto(page, '.hud-hora'), `${String(despues).padStart(2, '0')}:00`);
+  assert.equal(await texto(page, '.hud-hora'), `${String(despues).padStart(2, '0')}:00`,
+    `cinco horas después el reloj va por la ${despues} y la franja se quedó atrás`);
 });
 
 test('la franja dice la era de la banda: asentarse se ve en ella', async ({ page }) => {
