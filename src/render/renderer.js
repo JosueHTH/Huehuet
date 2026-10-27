@@ -94,7 +94,7 @@ export function createRenderer(canvas, opts = {}) {
       const capa = layers?.resources ?? null;
       const clave = claveTerreno(game, capa, cam);
       // Otra partida (o una carga) trae otro discovery: ni el terreno ni los caminantes de la anterior valen.
-      if (game.discovery !== terrenoDiscovery) { terrenoDiscovery = game.discovery; caminantes.clear(); sucio = true; }
+      if (game.discovery !== terrenoDiscovery) { terrenoDiscovery = game.discovery; caminantes.clear(); candidatos = { clave: null, sitios: [] }; sucio = true; }
       if (sucio || clave !== terrenoClave) { pintarTerreno(game, cam, capa); terrenoClave = clave; sucio = false; }
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);

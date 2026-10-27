@@ -762,6 +762,33 @@ test('una partida nueva con ids repetidos no hace deslizar a los NPC desde la an
   assert.ok(canvas.ctx.log.some((c) => c.n === 'arc' && cerca(c.args[0], destino.x, 0.5)));
 });
 
+test('otra partida en el mismo renderer, con igual nº de celdas y día, no pinta los candidatos de la anterior', () => {
+  const partida = (rica) => {
+    const grid = createGrid(30, 30);
+    for (const c of grid.cells) {
+      c.biome = 'pradera';
+      if (rica) { c.resources.caza = 4; c.resources.forraje = 4; c.resources.leña = 6; c.resources.piedra = 6; }
+    }
+    if (rica) { grid.at(12, 10).biome = 'rio'; grid.at(12, 10).river = true; grid.at(12, 10).resources.agua = 10; }
+    const discovery = createDiscovery(grid);
+    discovery.reveal(10, 10, 8);
+    return { discovery, over: false, settlement: null, clock: { tick: 0, day: 0, season: 'verano' }, band: { x: 10, y: 10, npcs: [] } };
+  };
+  const canvas = lienzoFalso();
+  const r = createRenderer(canvas, { createCanvas: lienzoFalso, now: () => 0 });
+  const cam = createCamera({ viewW: 440, viewH: 956, worldW: 30, worldH: 30, tile: 16 });
+  r.resize(440, 956, 1);
+  const capasC = { resources: null, candidates: true };
+  const etiquetas = () => canvas.ctx.log.filter((c) => c.n === 'fillText').length;
+  const rica = partida(true), pobre = partida(false);
+  assert.equal(rica.discovery.size, pobre.discovery.size);
+  r.draw(rica, cam, capasC);
+  assert.ok(etiquetas() > 0, 'la rica sí tiene candidatos');
+  canvas.ctx.log.length = 0;
+  r.draw(pobre, cam, capasC);
+  assert.equal(etiquetas(), 0, 'la yerma no hereda los sitios de la rica');
+});
+
 // --- anti-fuga: lo que el renderer decide pintar sale solo de discovery ----------------------
 
 test('el código de render no toca la rejilla ni el generador', () => {
