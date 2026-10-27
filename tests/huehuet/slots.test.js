@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createGame } from '../../src/game.js';
 import { BIOME_COLORS } from '../../src/render/sprites.js';
-import { renderThumbnail, accionesDeSlot, nombreNuevo, ticksParaCalentar, slotsACalentar } from '../../src/ui/slots.js';
+import { renderThumbnail, accionesDeSlot, nombreNuevo, ticksParaCalentar, slotsACalentar, sinComenzar, datosDeSlot } from '../../src/ui/slots.js';
 
 // Un lienzo falso: apunta cada rectángulo y devuelve una "URL de datos" que lo resume.
 function lienzoFalso() {
@@ -77,4 +77,19 @@ test('se calientan como mucho 3 slots, los más recientes, sin los dañados', ()
 test('el tick con el que se calienta nunca supera el del día guardado', () => {
   assert.equal(ticksParaCalentar({ day: 0 }), 0);
   assert.equal(ticksParaCalentar({ day: 10 }), 240);
+});
+
+// --- R1: la ficha no inventa cifras --------------------------------------------------------------
+
+test('sinComenzar reconoce el slot creado y nunca escrito, y solo ese', () => {
+  assert.equal(sinComenzar({ day: 0, thumbnail: null }), true);
+  assert.equal(sinComenzar({ day: 0, thumbnail: 'data:image/png;base64,X' }), false, 'con miniatura ya se jugó');
+  assert.equal(sinComenzar({ day: 3, thumbnail: null }), false, 'con días ya se jugó');
+  assert.equal(sinComenzar({ day: 3, thumbnail: 'data:image/png;base64,X' }), false);
+});
+
+test('datosDeSlot dice «Sin comenzar» en vez de ceros, y resume la partida escrita', () => {
+  assert.equal(datosDeSlot({ day: 0, thumbnail: null, era: 'Nómadas', poblacion: 0 }), 'Sin comenzar');
+  assert.equal(datosDeSlot({ day: 12, thumbnail: null, era: 'Aldea', poblacion: 7 }), 'Día 12 · Aldea · 7 habitantes');
+  assert.equal(datosDeSlot({ day: 1, thumbnail: null, era: 'Nómadas', poblacion: 1 }), 'Día 1 · Nómadas · 1 habitante');
 });

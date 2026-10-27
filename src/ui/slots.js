@@ -12,23 +12,35 @@ const CALENTAR_MAX = 3;         // la memoria de lineaBase guarda 4: queda un hu
 
 // --- Lo puro -------------------------------------------------------------------------------------
 
-// Miniatura del mundo conocido: un fondo gris y una celda de bioma por cada celda descubierta. Solo se lee el
-// conjunto descubierto (toJSON son índices), no se recorre la rejilla entera.
+// Miniatura del mundo conocido: un fondo gris y una celda de bioma por cada celda descubierta. Lo descubierto
+// se pide por discovery.knownCells(), el único camino de lectura del mundo: la rejilla entera no se recorre
+// ni se toca.
 export function renderThumbnail(game, size, createCanvas = () => globalThis.document.createElement('canvas')) {
   const lienzo = createCanvas();
   lienzo.width = size;
   lienzo.height = size;
   const ctx = lienzo.getContext('2d');
-  const { width, height } = game.grid;
-  const kx = size / width, ky = size / height;
+  const kx = size / game.grid.width, ky = size / game.grid.height;
   ctx.fillStyle = UNKNOWN_COLOR;
   ctx.fillRect(0, 0, size, size);
-  for (const i of game.discovery.toJSON()) {
-    const x = i % width, y = Math.floor(i / width);
-    ctx.fillStyle = BIOME_COLORS[game.grid.cells[i].biome] ?? UNKNOWN_COLOR;
-    ctx.fillRect(Math.floor(x * kx), Math.floor(y * ky), Math.ceil(kx), Math.ceil(ky));
+  for (const celda of game.discovery.knownCells()) {
+    ctx.fillStyle = BIOME_COLORS[celda.biome] ?? UNKNOWN_COLOR;
+    ctx.fillRect(Math.floor(celda.x * kx), Math.floor(celda.y * ky), Math.ceil(kx), Math.ceil(ky));
   }
   return lienzo.toDataURL('image/png');
+}
+
+// Un slot creado y nunca escrito: la Task 12 lo sostiene a propósito (de ahí que `Slot` lleve `seed`).
+// Es el slot cuyo día es 0 y que no tiene miniatura, es decir, el que no ha guardado nada todavía.
+export const sinComenzar = (slot) => slot.thumbnail === null && slot.day === 0;
+
+const plural = (n, uno, varios) => (n === 1 ? uno : varios);
+
+// El resumen de la ficha. Un slot sin comenzar no tiene cifras que enseñar: las del índice son ceros de
+// relleno, y pintarlos le dice al jugador que su banda de siete está en cero. Se dice lo que de verdad se sabe.
+export function datosDeSlot(slot) {
+  if (sinComenzar(slot)) return 'Sin comenzar';
+  return `Día ${slot.day} · ${slot.era} · ${slot.poblacion} ${plural(slot.poblacion, 'habitante', 'habitantes')}`;
 }
 
 // Un slot dañado no se puede abrir ni renombrar con sentido: solo se puede quitar de en medio.
@@ -76,7 +88,6 @@ function h(etiqueta, props = {}, ...hijos) {
 }
 
 const boton = (texto, props) => h('button', { type: 'button', ...props, class: `btn ${props.class ?? ''}`.trim() }, texto);
-const plural = (n, uno, varios) => (n === 1 ? uno : varios);
 
 export function mountSlotScreen(root, store, handlers = {}) {
   const calentar = handlers.warm ?? lineaBase;
@@ -113,7 +124,7 @@ export function mountSlotScreen(root, store, handlers = {}) {
     if (r.damaged) { refresh(); return; }    // ahora el índice la marca dañada: la tarjeta cambia sola
     // Un slot recién creado aún no tiene guardado: se empieza de cero con su semilla. Si el almacén no está
     // disponible también se juega, en memoria.
-    if (!r.unsupported && slot.thumbnail === null && slot.day === 0) {
+    if (!r.unsupported && sinComenzar(slot)) {
       handlers.onPlay?.(slot.id, createGame(slot.seed));
       return;
     }
@@ -161,7 +172,7 @@ export function mountSlotScreen(root, store, handlers = {}) {
           h('h2', { class: 'slot-nombre' }, slot.nombre),
           slot.damaged
             ? h('p', { class: 'aviso' }, 'Esta partida está dañada y no se puede abrir. Puedes borrarla.')
-            : h('p', { class: 'slot-datos' }, `Día ${slot.day} · ${slot.era} · ${slot.poblacion} ${plural(slot.poblacion, 'habitante', 'habitantes')}`))),
+            : h('p', { class: 'slot-datos' }, datosDeSlot(slot)))),
       errores.has(slot.id) ? h('p', { class: 'aviso', role: 'alert' }, errores.get(slot.id)) : null,
       acciones(slot));
   }

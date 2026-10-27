@@ -19,6 +19,9 @@
   --safe-left: env(safe-area-inset-left, 0px);
   --gutter: 16px;
 }
+/* El gateo es «táctil», no «con muesca»: en Android sin muesca, iPad o portátil táctil sobre-reserva 88 px de
+   956. Se deja a propósito (deuda anotada, T14/R6): el dispositivo objetivo de esta etapa es el iPhone 17 Pro
+   Max y en él manda env() (~59 px), con el suelo inerte. Estrecharlo es trabajo de otra etapa. */
 @media (hover: none) and (pointer: coarse) {
   :root {
     --safe-top: max(env(safe-area-inset-top, 0px), 54px);
@@ -93,6 +96,14 @@ html, body {
 .slot-danado { border-color: var(--warn); }
 .slot-main { display: flex; gap: 14px; align-items: center; }
 .slot-thumb { flex: none; width: 96px; height: 96px; border-radius: 10px; image-rendering: pixelated; background: #2a2a2a; border: 1px solid var(--line); }
+/* Sin mapa todavía: trama diagonal y borde discontinuo sobre la superficie, para que no se pueda confundir
+   con una miniatura real que saliera toda gris. */
+.slot-thumb-vacia {
+  background: repeating-linear-gradient(135deg, var(--surface-2) 0 6px, var(--surface) 6px 12px);
+  border-style: dashed;
+  border-color: var(--line);
+}
+
 .slot-info { min-width: 0; }
 .slot-nombre { margin: 0; font-size: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .slot-datos { margin: 4px 0 0; color: var(--muted); }

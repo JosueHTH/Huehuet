@@ -802,6 +802,21 @@ test('el código de render no toca la rejilla ni el generador', () => {
   }
 });
 
+// src/ui/ también pinta el mundo (la miniatura del slot) y estaba fuera de la red. Aquí no basta con que hoy
+// no fugue: el escaneo es lo que impide que empiece a fugar. Se le permite el tamaño del mundo (grid.width y
+// grid.height no son verdad del terreno, son la escala del cuadro) y nada más.
+test('el código de interfaz que pinta el mundo tampoco toca la rejilla', () => {
+  for (const f of ['slots.js']) {
+    const codigo = codeOnly(readFileSync(new URL(`../../src/ui/${f}`, import.meta.url), 'utf8'));
+    assert.ok(!/\.at\(/.test(codigo), `${f} usa .at(`);
+    assert.ok(!/\bcells\b/.test(codigo), `${f} usa cells`);
+    assert.ok(!/viableSites/.test(codigo), `${f} usa viableSites`);
+    assert.ok(!/\bforRadius\b/.test(codigo), `${f} usa forRadius`);
+    assert.deepEqual(codigo.match(/\bgrid\b(?!\.(?:inBounds|width|height))/g) ?? [], [],
+      `${f} usa grid más allá de grid.inBounds, grid.width y grid.height`);
+  }
+});
+
 test('el código de render no usa azar ni lee la hora por su cuenta salvo now inyectable', () => {
   for (const f of ['renderer.js', 'sprites.js', 'camera.js', 'gestures.js']) {
     const codigo = codeOnly(readFileSync(new URL(`../../src/render/${f}`, import.meta.url), 'utf8'));
