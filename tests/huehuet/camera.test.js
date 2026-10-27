@@ -806,7 +806,10 @@ test('el código de render no toca la rejilla ni el generador', () => {
 // no fugue: el escaneo es lo que impide que empiece a fugar. Se le permite el tamaño del mundo (grid.width y
 // grid.height no son verdad del terreno, son la escala del cuadro) y nada más.
 test('el código de interfaz que pinta el mundo tampoco toca la rejilla', () => {
-  for (const f of ['slots.js']) {
+  // La Task 15 añadió el HUD, las hojas y los paneles. Los paneles de la banda y del mundo DESCRIBEN el mundo
+  // (candidatos, celdas conocidas, desglose de un sitio): son justo el sitio por donde se filtraría la verdad
+  // del mapa, así que entran en la red igual que el renderer.
+  for (const f of ['slots.js', 'dom.js', 'sheets.js', 'hud.js', 'panels.js']) {
     const codigo = codeOnly(readFileSync(new URL(`../../src/ui/${f}`, import.meta.url), 'utf8'));
     assert.ok(!/\.at\(/.test(codigo), `${f} usa .at(`);
     assert.ok(!/\bcells\b/.test(codigo), `${f} usa cells`);

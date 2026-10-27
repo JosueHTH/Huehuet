@@ -114,3 +114,185 @@ html, body {
 
 .slots-footer { padding: 12px 0 calc(var(--safe-bottom) + 8px); }
 .slots-footer .btn { width: 100%; min-height: 56px; font-size: 18px; }
+
+/* --- HUD: franja superior y barra de pulgar ------------------------------------------------------
+   #hud no recibe punteros (el mapa está debajo): cada pieza del HUD los recupera por su cuenta. */
+.hud-top, .hud-bottom { position: absolute; left: 0; right: 0; pointer-events: auto; }
+
+.hud-top {
+  top: 0;
+  padding: calc(var(--safe-top) + 6px) calc(var(--safe-right) + var(--gutter)) 10px calc(var(--safe-left) + var(--gutter));
+  background: linear-gradient(to bottom, rgba(16, 22, 19, 0.88) 0%, rgba(16, 22, 19, 0.72) 70%, rgba(16, 22, 19, 0) 100%);
+}
+.hud-linea { display: flex; gap: 10px; align-items: baseline; }
+.hud-dia { font-size: 20px; font-weight: 700; }
+.hud-estacion { color: var(--accent); text-transform: capitalize; }
+.hud-hora, .hud-era { color: var(--muted); }
+.hud-linea-2 { margin-top: 2px; font-size: 15px; }
+.hud-poblacion { color: var(--text); }
+
+.hud-bottom {
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px calc(var(--safe-right) + var(--gutter)) calc(var(--safe-bottom) + 8px) calc(var(--safe-left) + var(--gutter));
+  background: linear-gradient(to top, rgba(16, 22, 19, 0.9) 0%, rgba(16, 22, 19, 0.7) 70%, rgba(16, 22, 19, 0) 100%);
+}
+.hud-row { display: flex; gap: 8px; }
+.hud-row .btn { flex: 1 1 0; min-width: 44px; padding: 0 4px; }
+.hud-row-hojas .btn { min-height: 52px; font-size: 17px; }
+
+/* Un conmutador encendido se distingue por color Y por peso: no todo el mundo ve bien el contraste de verdes. */
+.btn-toggle.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+/* --- Hojas deslizables ---------------------------------------------------------------------------
+   Lo que se mueve es el ALTO: el borde inferior nunca se despega del borde de la pantalla, así que el
+   relleno de --safe-bottom siempre deja el contenido sobre la barra de gestos. */
+.sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  max-height: 90dvh;
+  pointer-events: auto;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  border-radius: 18px 18px 0 0;
+  box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.45);
+  /* El relleno de área segura va en la HOJA, no en su cuerpo: el relleno de una caja está DENTRO de la caja,
+     así que con el relleno en el cuerpo su rectángulo seguía llegando hasta la barra de gestos. */
+  padding-bottom: calc(var(--safe-bottom) + 12px);
+}
+.sheet-handle { flex: none; touch-action: none; cursor: grab; }
+.sheet-grab { height: 26px; display: flex; align-items: center; justify-content: center; }
+.sheet-grab::before { content: ''; width: 44px; height: 5px; border-radius: 3px; background: var(--line); }
+.sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 calc(var(--safe-right) + var(--gutter)) 10px calc(var(--safe-left) + var(--gutter));
+  border-bottom: 1px solid var(--line);
+}
+.sheet-title { flex: 1; margin: 0; font-size: 20px; }
+.sheet-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 12px calc(var(--safe-right) + var(--gutter)) 0 calc(var(--safe-left) + var(--gutter));
+}
+.sheet-sub { margin: 18px 0 6px; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.sheet-body > .band-panel > .sheet-sub:first-child, .sheet-body .sheet-sub:first-child { margin-top: 0; }
+.sheet-nota { margin: 0 0 8px; font-size: 14px; color: var(--muted); }
+.sheet-vacio { margin: 0; color: var(--muted); }
+
+/* --- Hoja de la banda --- */
+.band-resumen { margin: 0; font-size: 18px; font-weight: 600; }
+.band-explica { margin: 4px 0 0; color: var(--muted); font-size: 15px; }
+
+.inventario, .npc-lista, .npc-necesidades, .cronica, .candidatos, .factores, .votos {
+  list-style: none; margin: 0; padding: 0;
+}
+.inventario { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; }
+.inventario li { display: flex; justify-content: space-between; gap: 8px; padding: 6px 10px; border-radius: 10px; background: var(--surface-2); }
+.inv-label { color: var(--muted); }
+.inv-valor { font-variant-numeric: tabular-nums; }
+
+.npc-lista { display: flex; flex-direction: column; gap: 10px; }
+.npc-card { padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); }
+.npc-cabecera { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.npc-nombre { font-size: 18px; font-weight: 700; }
+.npc-edad { font-size: 13px; color: var(--muted); }
+.npc-accion { margin: 2px 0 8px; font-size: 14px; color: var(--accent); }
+.npc-necesidades { display: flex; flex-direction: column; gap: 4px; }
+.need { display: grid; grid-template-columns: 62px 1fr 32px; gap: 8px; align-items: center; font-size: 13px; }
+.need-label { color: var(--muted); }
+.need-barra { height: 8px; border-radius: 4px; background: #1a211d; overflow: hidden; }
+.need-relleno { display: block; height: 100%; background: var(--accent); }
+/* Las necesidades vitales se leen al revés: cuanto más alta la cifra, peor. Que el color lo diga. */
+.need-hambre, .need-sed, .need-frio, .need-fatiga { background: var(--warn); }
+.need-valor { text-align: right; font-variant-numeric: tabular-nums; }
+.npc-rasgos { margin: 8px 0 0; font-size: 13px; color: var(--muted); }
+
+/* --- Hoja de la crónica --- */
+.cronica { display: flex; flex-direction: column; gap: 10px; }
+.cronica-entrada { display: grid; grid-template-columns: 56px 1fr; gap: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.cronica-dia { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.cronica-texto { margin: 0; font-size: 15px; }
+.cronica-hito { border-left: 3px solid var(--accent); padding-left: 8px; margin-left: -11px; }
+.cronica-hito .cronica-texto { font-weight: 600; }
+
+/* --- Hoja del mundo --- */
+.capas { display: flex; flex-wrap: wrap; gap: 8px; }
+.capas .btn { flex: 1 1 calc(33% - 8px); padding: 0 6px; }
+.candidatos { display: flex; flex-direction: column; gap: 8px; }
+.candidate {
+  display: grid;
+  grid-template-columns: 48px 1fr;
+  grid-template-areas: 'total lugar' 'total por';
+  gap: 0 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 12px;
+  text-align: left;
+}
+.cand-total { grid-area: total; align-self: center; font-size: 24px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.cand-lugar { grid-area: lugar; font-variant-numeric: tabular-nums; }
+.cand-por { grid-area: por; font-size: 13px; font-weight: 400; color: var(--muted); }
+.world-descubierto { margin: 10px 0 0; font-size: 14px; color: var(--muted); }
+.world-acciones .btn { width: 100%; }
+.world-aviso { margin: 8px 0 0; min-height: 20px; color: var(--accent); font-size: 14px; }
+
+/* --- El desglose de un sitio: la pantalla que explica la decisión -------------------------------
+   Nueve factores tienen que caber en un teléfono sin que el jugador adivine nada: cada uno es una fila de
+   dos líneas (nombre y aportación grandes arriba, barra del valor y peso pequeños abajo). */
+.site-cabecera { padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.site-lugar { margin: 0; font-size: 14px; color: var(--muted); }
+.site-cifras { margin: 2px 0 0; font-size: 15px; color: var(--muted); }
+.site-total { font-size: 32px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.site-umbral { color: var(--text); font-variant-numeric: tabular-nums; }
+.site-veredicto { margin: 6px 0 0; font-size: 16px; font-weight: 600; }
+.site-balance { margin: 4px 0 0; font-size: 14px; color: var(--muted); }
+.site-suma { color: var(--accent); font-variant-numeric: tabular-nums; }
+.site-resta { color: var(--danger); font-variant-numeric: tabular-nums; }
+.site-presion, .site-inviable { margin: 10px 0 0; font-size: 14px; color: var(--muted); }
+.site-inviable { color: var(--warn); }
+
+.factores { display: flex; flex-direction: column; gap: 2px; }
+.factor-row {
+  display: grid;
+  grid-template-columns: 1fr 58px;
+  grid-template-areas: 'label aporta' 'barra aporta' 'detalle aporta';
+  gap: 2px 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(67, 82, 74, 0.5);
+}
+.factor-label { grid-area: label; font-size: 15px; font-weight: 600; }
+.factor-aporta {
+  grid-area: aporta;
+  align-self: center;
+  text-align: right;
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.factor-penaliza .factor-aporta { color: var(--danger); }
+.factor-barra { grid-area: barra; height: 6px; border-radius: 3px; background: #1a211d; overflow: hidden; }
+.factor-relleno { display: block; height: 100%; background: var(--accent); }
+.factor-penaliza .factor-relleno { background: var(--danger); }
+.factor-detalle { grid-area: detalle; font-size: 13px; color: var(--muted); }
+.factor-detalle b { color: var(--text); font-variant-numeric: tabular-nums; }
+.site-estacion { margin-top: 8px; }
+
+.votos { display: flex; flex-wrap: wrap; gap: 6px; }
+.voto { display: flex; align-items: baseline; gap: 6px; padding: 5px 10px; border-radius: 10px; background: var(--surface-2); font-size: 14px; }
+.voto-nota { font-weight: 700; font-variant-numeric: tabular-nums; }
+.voto-anciano { font-size: 11px; color: var(--muted); }
+.site-disidencia { margin: 8px 0 0; font-size: 14px; color: var(--warn); }
+.site-ultima .site-motivo { margin: 0; font-size: 15px; font-style: italic; }
