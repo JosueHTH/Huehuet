@@ -629,6 +629,9 @@ test('los NPC se dibujan en la posición de pantalla de su celda', () => {
   assert.ok(arcos.some((c) => cerca(c.args[0], p.x) && cerca(c.args[1], p.y)), 'círculo del NPC centrado en la celda');
 });
 
+// «Medio tick» es medio tick de RELOJ REAL, que a x1 son 200 ms y a x10 son 20: la ventana de
+// interpolación la mide el renderer del tiempo entre cambios de tick (ver medirVentana). Aquí los ticks van
+// cada 400 ms, es decir a x1, que es donde la ventana vale MS_POR_TICK.
 test('los NPC se interpolan entre ticks: a medio tick están a medio camino', () => {
   let t = 0;
   const canvas = lienzoFalso();
@@ -638,18 +641,48 @@ test('los NPC se interpolan entre ticks: a medio tick están a medio camino', ()
   const { game } = escena();
   r.draw(game, cam, capas);
   game.clock.tick = 1; game.band.npcs[0].x = 4;
-  t = 200;
-  r.draw(game, cam, capas);       // aquí se nota el cambio de tick: el tramo empieza
   t = 400;
+  r.draw(game, cam, capas);       // aquí se nota el cambio de tick: el tramo empieza, y la ventana es 400
+  t = 600;
   canvas.ctx.log.length = 0;
   r.draw(game, cam, capas);
   const mitad = cam.worldToScreen(4, 3.5);
   assert.ok(canvas.ctx.log.some((c) => c.n === 'arc' && cerca(c.args[0], mitad.x, 0.5)), 'a medio camino entre 3.5 y 4.5');
-  t = 1000;
+  t = 1200;
   canvas.ctx.log.length = 0;
   r.draw(game, cam, capas);
   const fin = cam.worldToScreen(4.5, 3.5);
   assert.ok(canvas.ctx.log.some((c) => c.n === 'arc' && cerca(c.args[0], fin.x, 0.5)), 'llega a su celda');
+});
+
+// A x10 un tick dura 40 ms de reloj real, no 400. Interpolar siempre sobre 400 ms hace que lo dibujado
+// avance un 10% de lo que avanza la simulación, y el retraso crece hasta estabilizarse: medido reproduciendo
+// el algoritmo, 10,1 celdas a x10 y 3,1 a x3. A zoom 2 son 320 px, un tercio de la pantalla: el NPC que el
+// jugador toca no está donde lo ve.
+test('a x10 lo dibujado no se queda atrás de donde está el NPC', () => {
+  for (const [velocidad, msPorTick] of [['x1', 400], ['x3', 400 / 3], ['x10', 40]]) {
+    let t = 0;
+    const canvas = lienzoFalso();
+    const r = createRenderer(canvas, { createCanvas: lienzoFalso, now: () => t });
+    const cam = createCamera({ viewW: 440, viewH: 956, worldW: W, worldH: W, tile: 16 });
+    r.resize(440, 956, 1);
+    const { game } = escena();
+    const npc = game.band.npcs[0];
+    const x0 = npc.x;
+    r.draw(game, cam, capas);
+    let peor = 0;
+    for (let k = 1; k <= 40; k++) {
+      game.clock.tick = k;
+      npc.x = x0 + k;
+      t += msPorTick;
+      canvas.ctx.log.length = 0;
+      r.draw(game, cam, capas);
+      const arco = canvas.ctx.log.find((c) => c.n === 'arc');
+      const celdas = Math.abs(cam.screenToWorld(arco.args[0], arco.args[1]).x - (npc.x + 0.5));
+      peor = Math.max(peor, celdas);
+    }
+    assert.ok(peor <= 1.5, `a ${velocidad} lo dibujado llega a ir ${peor.toFixed(1)} celdas por detrás del NPC`);
+  }
 });
 
 test('los edificios se dibujan en su celda y no hay etiquetas de candidatos con la capa apagada', () => {

@@ -27,6 +27,15 @@ export function createRenderer(canvas, opts = {}) {
   let terreno = null, terrenoCtx = null, terrenoClave = null, terrenoDiscovery = null, sucio = true;
   let candidatos = { clave: null, sitios: [] };
   const caminantes = new Map();   // id -> { de, a, tick, desde } para interpolar entre ticks
+  // Cuánto dura un tick de RELOJ REAL, medido. No es MS_POR_TICK salvo a velocidad x1: a x10 un tick dura
+  // 40 ms, y interpolar sobre 400 hacía avanzar lo dibujado un 10% de lo que avanza la simulación. El
+  // retraso se acumulaba hasta estabilizarse en 10 celdas (medido), que a zoom 2 son 320 px: el NPC que el
+  // jugador toca no estaba donde lo veía. El renderer no conoce la velocidad del HUD y no tiene por qué:
+  // la deduce del tiempo entre cambios de tick, que es justo lo que necesita.
+  let ventana = MS_POR_TICK;
+  let medida = false;           // la ventana ya se midió al menos una vez
+  let tickVisto = null;
+  let tiempoDelTick = 0;
 
   function claveTerreno(game, capa, cam) {
     // Las cantidades se reponen cada día: con una capa de recursos activa el terreno caduca con el día.
@@ -58,18 +67,33 @@ export function createRenderer(canvas, opts = {}) {
     }
   }
 
+  // Media móvil del intervalo real entre ticks, acotada: nunca más que un tick a x1 (volver de una pestaña
+  // oculta daría un intervalo enorme) ni menos de 8 ms (un lote de ticks en un solo fotograma).
+  function medirVentana(game, t) {
+    if (game.clock.tick === tickVisto) return;
+    if (tickVisto !== null) {
+      const bruto = (t - tiempoDelTick) / Math.max(1, game.clock.tick - tickVisto);
+      // La PRIMERA medida manda entera: promediarla con el valor por defecto dejaría unos ticks de
+      // transición en los que lo dibujado se va quedando atrás, que es justo lo que se quiere evitar.
+      ventana = Math.min(MS_POR_TICK, Math.max(8, medida ? ventana * 0.5 + bruto * 0.5 : bruto));
+      medida = true;
+    }
+    tickVisto = game.clock.tick;
+    tiempoDelTick = t;
+  }
+
   function posicion(npc, game, t) {
     let c = caminantes.get(npc.id);
     if (!c) { c = { de: { x: npc.x, y: npc.y }, a: { x: npc.x, y: npc.y }, tick: game.clock.tick, desde: t, heading: undefined }; caminantes.set(npc.id, c); }
     if (c.tick !== game.clock.tick) {
-      const k = Math.min(1, (t - c.desde) / MS_POR_TICK);
+      const k = Math.min(1, (t - c.desde) / ventana);
       c.de = { x: c.de.x + (c.a.x - c.de.x) * k, y: c.de.y + (c.a.y - c.de.y) * k };
       c.a = { x: npc.x, y: npc.y };
       c.tick = game.clock.tick;
       c.desde = t;
       if (c.a.x !== c.de.x || c.a.y !== c.de.y) c.heading = Math.atan2(c.a.y - c.de.y, c.a.x - c.de.x);
     }
-    const k = Math.min(1, (t - c.desde) / MS_POR_TICK);
+    const k = Math.min(1, (t - c.desde) / ventana);
     return { x: c.de.x + (c.a.x - c.de.x) * k, y: c.de.y + (c.a.y - c.de.y) * k, heading: c.heading };
   }
 
@@ -94,7 +118,7 @@ export function createRenderer(canvas, opts = {}) {
       const capa = layers?.resources ?? null;
       const clave = claveTerreno(game, capa, cam);
       // Otra partida (o una carga) trae otro discovery: ni el terreno ni los caminantes de la anterior valen.
-      if (game.discovery !== terrenoDiscovery) { terrenoDiscovery = game.discovery; caminantes.clear(); candidatos = { clave: null, sitios: [] }; sucio = true; }
+      if (game.discovery !== terrenoDiscovery) { terrenoDiscovery = game.discovery; caminantes.clear(); candidatos = { clave: null, sitios: [] }; sucio = true; ventana = MS_POR_TICK; medida = false; tickVisto = null; }
       if (sucio || clave !== terrenoClave) { pintarTerreno(game, cam, capa); terrenoClave = clave; sucio = false; }
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -129,6 +153,7 @@ export function createRenderer(canvas, opts = {}) {
       }
 
       const t = ahora();
+      medirVentana(game, t);
       const vivos = new Set();
       for (const npc of game.band.npcs) {
         if (!npc.alive) continue;
