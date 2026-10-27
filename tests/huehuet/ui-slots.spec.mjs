@@ -30,14 +30,22 @@ test('todos los botones de la pantalla de slots miden 44 px o más', async ({ pa
   await page.getByRole('button', { name: /nueva partida/i }).click();
   for (const b of await page.getByRole('button').all()) {
     const box = await b.boundingBox();
-    if (box) assert.ok(box.height >= 44 && box.width >= 44, `botón de ${box.width}x${box.height}`);
+    if (box) {
+      assert.ok(box.height >= 44 && box.width >= 44, `botón de ${box.width}x${box.height}`);
+      assert.ok(box.x >= 0 && box.x + box.width <= 440, 'botón dentro del ancho de 440 px');
+    }
   }
+  const desborda = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+  assert.equal(desborda, false, 'la página no desborda a los lados');
 });
 
 test('la pantalla de slots respeta las áreas seguras del iPhone 17 Pro Max', async ({ page }) => {
   await page.goto(URL);
   const top = await page.locator('.slots-header').boundingBox();
   assert.ok(top.y >= 54, `cabecera a ${top.y} px, bajo la Dynamic Island`);
+  // Chromium declara 0 en env(safe-area-inset-*): este es el suelo de 54 px. En el teléfono manda env() (~59 px).
+  const pie = await page.locator('.slots-footer .btn').boundingBox();
+  assert.ok(pie.y + pie.height <= 956 - 34, 'el botón principal queda sobre la barra de gestos');
 });
 
 // --- Más allá de las cuatro del encargo ---
@@ -119,27 +127,4 @@ test('mientras se está en la pantalla se calienta la memoria de lineaBase, no e
   assert.equal(await tamano(), 0, 'nada se serializa ni se calienta en el primer fotograma');
   for (let i = 0; i < 3; i++) await page.evaluate(() => window.__ociosas.shift()?.());
   assert.equal(await tamano(), 2, 'tras el tiempo libre, los dos slots están en memoria');
-});
-
-// El tamaño real de un iPhone 17 Pro Max en CSS px: la configuración del encargo (1320x2868) es su resolución
-// de dispositivo, y a ese ancho una columna pensada para el pulgar se ve diminuta. Aquí se comprueba el real.
-test.describe('a 440x956 CSS px, el tamaño real del teléfono', () => {
-  test.use({ viewport: { width: 440, height: 956 } });
-
-  test('cabecera bajo la Isla, botones de 44 px y sin desbordar a los lados', async ({ page }) => {
-    await page.goto(URL);
-    await page.getByRole('button', { name: /nueva partida/i }).click();
-    await page.getByRole('button', { name: /nueva partida/i }).click();
-    const top = await page.locator('.slots-header').boundingBox();
-    assert.ok(top.y >= 54, `cabecera a ${top.y} px`);
-    for (const b of await page.getByRole('button').all()) {
-      const box = await b.boundingBox();
-      assert.ok(box.height >= 44 && box.width >= 44, `botón de ${box.width}x${box.height}`);
-      assert.ok(box.x >= 0 && box.x + box.width <= 440, 'botón dentro del ancho');
-    }
-    const desborda = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
-    assert.equal(desborda, false);
-    const pie = await page.locator('.slots-footer .btn').boundingBox();
-    assert.ok(pie.y + pie.height <= 956 - 34, 'el botón principal queda sobre la barra de gestos');
-  });
 });

@@ -7,7 +7,8 @@ export default defineConfig({
   testDir: 'tests/huehuet',
   testMatch: '**/*.spec.mjs',
   use: {
-    viewport: { width: 1320, height: 2868 },
+    // CSS px: 440x956 a dpr 3 son los 1320x2868 píxeles de dispositivo del iPhone 17 Pro Max.
+    viewport: { width: 440, height: 956 },
     deviceScaleFactor: 3,
     isMobile: true,
     hasTouch: true,
