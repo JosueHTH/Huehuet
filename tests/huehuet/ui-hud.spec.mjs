@@ -82,25 +82,30 @@ test('los controles de velocidad cambian la velocidad activa', async ({ page }) 
   assert.equal(await presionado(page, /^x10$/), 'false', 'x10 sigue marcada con la pausa activa');
 });
 
+// Desde la Task 16 el bucle del juego también corre el reloj, así que ya no se puede afirmar un tick EXACTO
+// tras una llamada a avanzarReloj: entre las dos lecturas el bucle mete lo suyo. Lo que se mide es el
+// TRAMO de cada llamada, con el margen de esos fotogramas, y lo que se afirma sigue siendo lo mismo: la
+// velocidad del HUD es la que manda, y con la pausa no corre nada en absoluto.
 test('la velocidad elegida es la que corre el reloj, y con la pausa no corre', async ({ page }) => {
   await iniciarPartida(page);
+  const tick = () => page.evaluate(() => window.__huehuet.game.clock.tick);
+  const tramo = async (ms) => { const antes = await tick(); await avanzarReloj(page, ms); return await tick() - antes; };
+
   // x1: 400 ms de tiempo real son un tick; 4800 ms son 12 ticks, medio día.
   await pulsar(page, /^x1$/);
-  await avanzarReloj(page, 4800);
-  const aX1 = await page.evaluate(() => window.__huehuet.game.clock.tick);
-  assert.equal(aX1, 12, `a x1, 4800 ms deberían ser 12 horas, no ${aX1}`);
+  const aX1 = await tramo(4800);
+  assert.ok(aX1 >= 12 && aX1 <= 14, `a x1, 4800 ms deberían ser 12 horas (y alguna del bucle), no ${aX1}`);
 
   // x10 corre más que x1 con el mismo tiempo real (el reloj acota a 24 ticks por llamada).
   await pulsar(page, /^x10$/);
-  await avanzarReloj(page, 4800);
-  const aX10 = await page.evaluate(() => window.__huehuet.game.clock.tick);
-  assert.ok(aX10 - aX1 > 12, `x10 debería correr más que x1 (corrió ${aX10 - aX1} horas)`);
+  const aX10 = await tramo(4800);
+  assert.ok(aX10 > aX1, `x10 debería correr más que x1 (corrió ${aX10} horas frente a ${aX1})`);
 
   // Y con la pausa, el mismo tiempo real no mueve nada: ni el reloj ni lo que pinta el HUD.
   await pulsar(page, /pausa/i);
+  await page.waitForTimeout(200);              // el fotograma que ya iba en vuelo acaba de aplicarse
   const franja = await texto(page, '.hud-top');
-  await avanzarReloj(page, 4800);
-  assert.equal(await page.evaluate(() => window.__huehuet.game.clock.tick), aX10, 'la pausa no detuvo el reloj');
+  assert.equal(await tramo(4800), 0, 'la pausa no detuvo el reloj');
   assert.equal(await texto(page, '.hud-top'), franja, 'la franja cambió con la pausa activa');
 });
 

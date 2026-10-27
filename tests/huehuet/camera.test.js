@@ -826,3 +826,94 @@ test('el código de render no usa azar ni lee la hora por su cuenta salvo now in
     assert.ok(!/Math\.random|Math\['random'\]/.test(codigo), `${f} usa Math.random`);
   }
 });
+
+// --- Márgenes de la vista (Task 16) -------------------------------------------------------------
+// El HUD flota sobre el mapa: la franja superior y la barra del pulgar tapan unos 250 px de los 956 del
+// iPhone. Sin saberlo, la cámara centraba la banda en el centro del LIENZO, que cae detrás de la barra, y
+// el acotado del borde la empujaba hasta la esquina. Los márgenes le dicen cuál es el mapa que se ve.
+
+test('sin márgenes la cámara se comporta exactamente igual que antes', () => {
+  const con = nueva(); con.setInsets({ top: 0, right: 0, bottom: 0, left: 0 });
+  const sin = nueva();
+  con.centerOn(48, 48); sin.centerOn(48, 48);
+  assert.deepEqual(con.worldToScreen(10, 10), sin.worldToScreen(10, 10));
+  assert.equal(con.minZoom, sin.minZoom);
+});
+
+test('centerOn deja el punto en el centro del mapa visible, no en el del lienzo', () => {
+  const cam = nueva();
+  cam.setInsets({ top: 120, bottom: 200 });
+  cam.centerOn(48, 48);
+  const p = cam.worldToScreen(48, 48);
+  assert.ok(cerca(p.x, 200), `x=${p.x}: el centro en x no cambia sin márgenes laterales`);
+  assert.ok(cerca(p.y, 120 + (800 - 120 - 200) / 2), `y=${p.y}: el centro vertical no tuvo en cuenta los márgenes`);
+});
+
+test('el acotado del borde cubre el mapa visible, no el lienzo entero', () => {
+  const cam = nueva();
+  cam.setInsets({ top: 120, bottom: 200 });
+  cam.centerOn(94, 94);
+  // La esquina lejana del mundo llega justo al borde del mapa visible y no más allá.
+  const b = cam.worldToScreen(96, 96);
+  assert.ok(b.x >= 400 - 0.001 && b.y >= 800 - 200 - 0.001, `la esquina del mundo quedó dentro del mapa visible (${b.x}, ${b.y})`);
+  assert.ok(cerca(b.y, 800 - 200), `el borde del mundo se alinea con el borde del mapa visible, no con el del lienzo (y=${b.y})`);
+});
+
+test('con márgenes, un punto a dos celdas del borde del mundo no queda bajo el HUD', () => {
+  const cam = nueva({ viewW: 440, viewH: 956 });
+  cam.setInsets({ top: 121, bottom: 130 });
+  cam.zoom = 2;
+  cam.centerOn(6.5, 93.5);                       // la banda de la semilla 1, a 2,5 celdas del borde sur
+  const p = cam.worldToScreen(6.5, 93.5);
+  assert.ok(p.y <= 956 - 130, `la banda cae en y=${p.y}, bajo la barra del pulgar (empieza en ${956 - 130})`);
+  assert.ok(p.y >= 121, `la banda cae en y=${p.y}, bajo la franja superior (acaba en 121)`);
+  assert.ok(p.x >= 0 && p.x <= 440, `la banda cae en x=${p.x}`);
+});
+
+// La vista es ancha a propósito: con 440 px de ancho el eje x manda en el mínimo y la prueba pasaría sin
+// mirar los márgenes. Aquí el que manda es el alto, que es justo el que el HUD recorta.
+test('minZoom es el que hace entrar el mundo en el mapa visible', () => {
+  const cam = nueva({ viewW: 1600, viewH: 956 });
+  cam.setInsets({ top: 121, bottom: 130 });
+  cam.resize(1600, 956);
+  assert.ok(cerca(cam.minZoom, (956 - 251) / (96 * 16)),
+    `minZoom=${cam.minZoom}: no se calculó sobre el mapa visible (se esperaba ${(956 - 251) / (96 * 16)})`);
+});
+
+test('screenToWorld y worldToScreen siguen siendo inversas con márgenes', () => {
+  const cam = nueva();
+  cam.setInsets({ top: 90, right: 20, bottom: 150, left: 10 });
+  cam.centerOn(40, 40);
+  cam.zoomAt(1.7, 180, 300);
+  for (const [sx, sy] of [[0, 0], [180, 300], [400, 800], [230, 455]]) {
+    const w = cam.screenToWorld(sx, sy);
+    const p = cam.worldToScreen(w.x, w.y);
+    assert.ok(cerca(p.x, sx) && cerca(p.y, sy), `${sx},${sy} -> ${p.x},${p.y}`);
+  }
+});
+
+test('zoomAt con márgenes deja quieto el punto del mundo bajo el dedo', () => {
+  const cam = nueva();
+  cam.setInsets({ top: 90, bottom: 150 });
+  cam.centerOn(48, 48);
+  for (const f of [1.4, 0.7]) {
+    const antes = cam.screenToWorld(130, 610);
+    cam.zoomAt(f, 130, 610);
+    const despues = cam.screenToWorld(130, 610);
+    assert.ok(cerca(antes.x, despues.x, 0.01) && cerca(antes.y, despues.y, 0.01), `ancla con márgenes, factor ${f}`);
+  }
+});
+
+// --- anti-fuga: el ensamblado tampoco mira la rejilla -------------------------------------------
+// main.js decide qué NPC y qué sitio se abren al toque, así que es justo el sitio por donde se filtraría la
+// verdad del mapa. Entra en la red con la misma regla que el renderer y los paneles.
+
+test('el ensamblado no toca la rejilla ni el generador', () => {
+  const codigo = codeOnly(readFileSync(new URL('../../src/main.js', import.meta.url), 'utf8'));
+  assert.ok(!/\.at\(/.test(codigo), 'main.js usa .at(');
+  assert.ok(!/\bcells\b/.test(codigo), 'main.js usa cells');
+  assert.ok(!/viableSites/.test(codigo), 'main.js usa viableSites');
+  assert.ok(!/\bforRadius\b/.test(codigo), 'main.js usa forRadius');
+  assert.deepEqual(codigo.match(/\bgrid\b(?!\.(?:inBounds|width|height))/g) ?? [], [],
+    'main.js usa grid más allá de grid.inBounds, grid.width y grid.height');
+});

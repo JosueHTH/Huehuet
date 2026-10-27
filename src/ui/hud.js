@@ -66,6 +66,13 @@ export function mountHud(root, handlers = {}) {
   const api = {
     get speed() { return velocidad; },
 
+    // Lo que el HUD tapa del lienzo, en px CSS. El HUD flota sobre el mapa, así que la cámara necesita
+    // saberlo para encuadrar en el rectángulo que el jugador ve y no en el centro del lienzo (Task 16).
+    // offsetHeight ya incluye el relleno de área segura, que es justo lo que ocupa de verdad.
+    get insets() {
+      return { top: arriba.offsetHeight, right: 0, bottom: abajo.offsetHeight, left: 0 };
+    },
+
     update(game) {
       const { clock, band } = game;
       poner(dia, `Día ${clock.day}`);
