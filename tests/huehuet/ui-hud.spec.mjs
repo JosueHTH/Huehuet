@@ -275,20 +275,286 @@ test('el desglose nombra el umbral vigente y el motivo de la decisión', async (
   const verdad = await page.evaluate(async () => {
     const { acceptanceThreshold } = await import('/src/tribe/sitescore.js');
     const { bandPressure } = await import('/src/tribe/band.js');
+    const { decideSettlement } = await import('/src/tribe/consensus.js');
     const g = window.__huehuet.game;
     const presion = bandPressure(g.band, { season: g.clock.season });
-    return { umbral: acceptanceThreshold(presion), presion, motivo: g.lastDecision?.reason ?? null };
+    return {
+      umbral: acceptanceThreshold(presion),
+      presion,
+      motivo: decideSettlement(g.band, g.discovery, { season: g.clock.season }).reason,
+    };
   });
-  assert.ok(verdad.motivo, 'la partida debería tener una decisión con motivo a estas alturas');
+  assert.ok(verdad.motivo, 'la banda debería tener algo que decir sobre lo que haría ahora');
   // El umbral no es la constante de calma: se mueve con la presión y lo pintado tiene que moverse con él.
   assert.equal(await texto(page, '.site-umbral'), String(Math.round(verdad.umbral)), 'el umbral pintado no es el vigente');
   assert.match(await texto(page, '.site-presion'), new RegExp(`\\b${Math.round(verdad.presion * 100)}\\b`), 'el desglose no dice el apremio real');
   assert.equal(await texto(page, '.site-motivo'), verdad.motivo, 'el desglose no cita el motivo de la banda');
-  // Y lo fecha: la última decisión puede ser de hace días y hablar de otro sitio. Sin el día, leída junto a
-  // un sitio de 71 puntos, «aún no conocen ningún lugar» parece una mentira de la interfaz.
-  const dicho = await page.evaluate(() => Math.floor((window.__huehuet.game.band.lastEvaluation ?? 0) / 24));
-  assert.match(await texto(page, '.site-ultima .sheet-sub'), new RegExp(`día ${dicho}\\b`),
-    `el desglose no fecha el motivo en el día ${dicho}`);
+  // Y el encabezado ya no es una fecha: es una relación con AHORA. Fechar el motivo no bastaba, porque un
+  // motivo rancio y las cifras frescas pueden caer el mismo día (medido: evaluación en el tick 102, candidato
+  // conocido en el 108, los dos del día 4) y entonces la fecha no avisaba de nada.
+  const encabezado = await texto(page, '.site-ultima .sheet-sub');
+  assert.match(encabezado, /ahora/i, `el encabezado del motivo no lo relaciona con ahora: «${encabezado}»`);
+});
+
+// La coherencia es el arreglo central: las cifras de la hoja (consenso, umbral, apremio) se recalculan al
+// vuelo, así que el motivo tiene que venir del mismo instante. Tomado de `game.lastDecision` llegaba hasta 5,5
+// días rancio —`considerSettlement` devuelve null entero mientras la banda camina hacia un sitio— y podía
+// contradecir el veredicto en negrita de su propia hoja: votos de 67 a 70 sobre un umbral de 59 y
+// «se quedarían aquí» arriba, y tres líneas más abajo «aún no conoce ningún lugar con agua dulce».
+test('el motivo que cita el desglose habla del mismo momento que sus cifras', async ({ page }) => {
+  await iniciarPartida(page, { semilla: SEMILLA_CON_SITIOS, ticks: TICKS_HASTA_SITIOS });
+  await pulsar(page, /^mundo$/i);
+  await page.locator('.candidate').first().click();
+  const motivo = await texto(page, '.site-motivo');
+  const vigente = await page.evaluate(async () => {
+    const { decideSettlement } = await import('/src/tribe/consensus.js');
+    const g = window.__huehuet.game;
+    return decideSettlement(g.band, g.discovery, { season: g.clock.season }).reason;
+  });
+  assert.equal(motivo, vigente, 'el motivo pintado no es el que la banda daría con las cifras de esta hoja');
+});
+
+// El motivo fresco habla del MEJOR sitio de la banda, que no es necesariamente el que el jugador tocó. Si
+// habla de otro, la hoja tiene que decirlo: si no, «se asienta en (34, 72)» leído en la hoja de (33, 71)
+// vuelve a ser una contradicción, ahora fresca.
+test('si el motivo habla de otro sitio, el desglose lo dice', async ({ page }) => {
+  await iniciarPartida(page, { semilla: SEMILLA_CON_SITIOS, ticks: TICKS_HASTA_SITIOS });
+  await pulsar(page, /^mundo$/i);
+  assert.ok(await page.locator('.candidate').count() >= 2, 'hacen falta dos candidatos para que uno no sea el elegido');
+  await page.locator('.candidate').nth(1).click();
+  const r = await page.evaluate(async () => {
+    const { decideSettlement } = await import('/src/tribe/consensus.js');
+    const g = window.__huehuet.game;
+    const el = document.querySelector('.site-breakdown');
+    const d = decideSettlement(g.band, g.discovery, { season: g.clock.season });
+    return { sx: d.site?.x, sy: d.site?.y, tx: Number(el.dataset.x), ty: Number(el.dataset.y) };
+  });
+  assert.ok(r.sx !== undefined, 'la banda no está hablando de ningún sitio: la prueba no afirma nada');
+  assert.ok(r.sx !== r.tx || r.sy !== r.ty,
+    `el segundo candidato (${r.tx}, ${r.ty}) es justo el sitio del que habla la banda: la prueba no afirma nada`);
+  const encabezado = await texto(page, '.site-ultima .sheet-sub');
+  assert.match(encabezado, new RegExp(`\\(${r.sx}, ${r.sy}\\)`),
+    `el encabezado no avisa de que el motivo habla de (${r.sx}, ${r.sy}) y no de este sitio: «${encabezado}»`);
+});
+
+// --- El veredicto: la única frase que resume la pantalla -----------------------------------------
+// «le da 68 de 59» se lee como una fracción y es un sinsentido aritmético. La forma es la de la rama negativa.
+// Esta prueba abre el MISMO sitio con dos apremios distintos: así el veredicto tiene que cambiar de lado sin
+// que cambie el consenso, y ni una media fija ni un `settle` fijo pueden sobrevivir.
+test('el veredicto compara el consenso con el umbral y cambia de lado con él', async ({ page }) => {
+  await iniciarPartida(page, { semilla: SEMILLA_CON_SITIOS, ticks: TICKS_HASTA_SITIOS });
+
+  const abrirCandidato = async () => {
+    // La hoja al 90% tapa la franja del pulgar: hay que cerrarla antes de volver a pulsar «Mundo».
+    if (await page.locator('.sheet.open').count() > 0) await pulsar(page, /cerrar/i);
+    await pulsar(page, /^mundo$/i);
+    assert.ok(await page.locator('.candidate').count() > 0, 'la hoja de Mundo no lista ningún sitio candidato');
+    await page.locator('.candidate').first().click();
+    assert.equal(await page.locator('.site-breakdown').count(), 1, 'pulsar un candidato no abrió su desglose');
+  };
+
+  // La verdad se recalcula desde el modelo para el sitio que la hoja dice estar explicando.
+  const medir = () => page.evaluate(async () => {
+    const { scoreSite, acceptanceThreshold } = await import('/src/tribe/sitescore.js');
+    const { evaluateConsensus } = await import('/src/tribe/consensus.js');
+    const { bandPressure } = await import('/src/tribe/band.js');
+    const g = window.__huehuet.game;
+    const el = document.querySelector('.site-breakdown');
+    const s = scoreSite(g.discovery, Number(el.dataset.x), Number(el.dataset.y), { season: g.clock.season });
+    const umbral = acceptanceThreshold(bandPressure(g.band, { season: g.clock.season }));
+    const c = evaluateConsensus(g.band, s);
+    return { media: Math.round(c.average), umbral: Math.round(umbral), votos: c.votes.length, settle: s.viable && c.average >= umbral };
+  });
+
+  await abrirCandidato();
+  const con = await medir();
+  assert.ok(con.votos > 0, 'nadie con edad para decidir vota: la prueba no afirma nada');
+  assert.equal(con.settle, true, 'con el apremio de hoy el consejo debería aceptar este sitio');
+  assert.equal(await texto(page, '.site-veredicto'),
+    `El consejo le da ${con.media} y hacen falta ${con.umbral}: se quedarían aquí.`,
+    'el veredicto positivo no compara el consenso con el umbral');
+
+  // Sin apremio el umbral sube al de la calma y el MISMO sitio deja de valer. El consenso no depende de las
+  // necesidades, así que la media pintada tiene que quedarse donde estaba.
+  await page.evaluate(async () => {
+    const { livingNpcs } = await import('/src/tribe/band.js');
+    for (const n of livingNpcs(window.__huehuet.game.band)) {
+      n.needs.hambre = 0; n.needs.sed = 0; n.needs.frio = 0; n.needs.fatiga = 0; n.needs.moral = 100;
+    }
+    window.__huehuet.refrescar();
+  });
+  await abrirCandidato();
+  const sin = await medir();
+  assert.equal(sin.media, con.media, 'el consenso no debería cambiar porque bajen las necesidades');
+  assert.ok(sin.umbral > con.umbral, `sin apremio el umbral debería subir (${con.umbral} → ${sin.umbral})`);
+  assert.equal(sin.settle, false, 'sin apremio el consejo no debería aceptar este sitio');
+  assert.equal(await texto(page, '.site-veredicto'),
+    `El consejo le da ${sin.media} y hacen falta ${sin.umbral}: por ahora no.`,
+    'el veredicto negativo no compara el consenso con el umbral');
+});
+
+// --- Lo que opina la banda -----------------------------------------------------------------------
+
+test('los votos del desglose son los del consenso, y el voto doble de los ancianos se ve', async ({ page }) => {
+  await iniciarPartida(page, { semilla: SEMILLA_CON_SITIOS, ticks: TICKS_HASTA_SITIOS });
+  await pulsar(page, /^mundo$/i);
+  await page.locator('.candidate').first().click();
+
+  const pintado = await page.locator('.sheet.open .voto').evaluateAll((filas) => filas.map((f) => ({
+    npc: f.dataset.npc,
+    nombre: f.querySelector('.voto-nombre').textContent,
+    nota: f.querySelector('.voto-nota').textContent,
+    doble: f.querySelector('.voto-anciano')?.textContent ?? null,
+  })));
+  const verdad = await page.evaluate(async () => {
+    const { scoreSite } = await import('/src/tribe/sitescore.js');
+    const { evaluateConsensus } = await import('/src/tribe/consensus.js');
+    const g = window.__huehuet.game;
+    const el = document.querySelector('.site-breakdown');
+    const s = scoreSite(g.discovery, Number(el.dataset.x), Number(el.dataset.y), { season: g.clock.season });
+    return evaluateConsensus(g.band, s).votes.map((v) => ({ npcId: v.npcId, nombre: v.nombre, score: v.score, elder: v.elder }));
+  });
+
+  assert.equal(pintado.length, verdad.length, `${pintado.length} votos pintados para ${verdad.length} votantes`);
+  assert.ok(verdad.length > 0, 'nadie vota: la prueba no afirma nada');
+  assert.ok(verdad.some((v) => v.elder), 'no hay ancianos votando: la prueba no puede ver el voto doble');
+  assert.ok(verdad.some((v) => !v.elder), 'solo votan ancianos: la prueba no distinguiría el voto doble');
+  // Y las notas no son todas iguales: si lo fueran, un cero fijo sería indistinguible de la verdad.
+  assert.ok(new Set(verdad.map((v) => Math.round(v.score))).size > 1, 'todos votan lo mismo: la prueba no afirma nada');
+  for (const [i, v] of verdad.entries()) {
+    assert.equal(pintado[i].npc, v.npcId, `el voto ${i} no es de ${v.npcId}`);
+    assert.equal(pintado[i].nombre, v.nombre, `el voto ${i} no lleva el nombre de ${v.nombre}`);
+    assert.equal(pintado[i].nota, String(Math.round(v.score)),
+      `la nota de ${v.nombre} debería ser ${Math.round(v.score)} y pone ${pintado[i].nota}`);
+    if (v.elder) assert.equal(pintado[i].doble, 'cuenta doble', `el voto de ${v.nombre} es de anciano y no dice que cuenta doble`);
+    else assert.equal(pintado[i].doble, null, `${v.nombre} no es anciana y su voto dice que cuenta doble`);
+  }
+});
+
+// La disidencia no ocurre con los sitios y los rasgos de la partida sembrada (medido: el desvío máximo
+// alcanzable con rasgos extremos sobre los ocho candidatos es de 11,2 puntos y el umbral son 20), así que se
+// pinta un sitio lo bastante desequilibrado con una banda de rasgos opuestos: es lo mismo que hace la prueba
+// del peso de invierno, llamar al renderizador con una verdad construida aparte.
+test('la disidencia que pinta el desglose es la del consenso', async ({ page }) => {
+  await iniciarPartida(page, { semilla: SEMILLA_CON_SITIOS, ticks: TICKS_HASTA_SITIOS });
+  const r = await page.evaluate(async () => {
+    const { SITE_FACTORS, acceptanceThreshold } = await import('/src/tribe/sitescore.js');
+    const { evaluateConsensus } = await import('/src/tribe/consensus.js');
+    const { renderSiteBreakdown, conSigno } = await import('/src/ui/panels.js');
+    const valores = { agua: 0.75, caza: 0.8, piedra: 0.85, inundacion: 1, depredadores: 1 };
+    const site = {
+      x: 10, y: 20, viable: true, total: 60,
+      factors: SITE_FACTORS.map((f) => ({ ...f, value: valores[f.id] ?? 0, effectiveWeight: f.weight, contribution: 0 })),
+    };
+    const band = { npcs: [
+      { id: 'n1', nombre: 'Tama', age: 30, alive: true, traits: { cautela: 1, audacia: 0, sabiduria: 0 } },
+      { id: 'n2', nombre: 'Nelli', age: 32, alive: true, traits: { cautela: 1, audacia: 0, sabiduria: 0 } },
+      { id: 'n3', nombre: 'Xoco', age: 50, alive: true, traits: { cautela: 0, audacia: 1, sabiduria: 0 } },
+    ] };
+    const consensus = evaluateConsensus(band, site);
+    const umbral = acceptanceThreshold(0);
+    const nodo = renderSiteBreakdown(site, { settle: false, site, consensus, threshold: umbral, pressure: 0, reason: '' });
+    return {
+      pintado: nodo.querySelector('.site-disidencia')?.textContent ?? null,
+      esperado: consensus.dissenters.length === 0 ? null
+        : `Se apartan del grupo: ${consensus.dissenters.map((d) => `${d.nombre} (${conSigno(d.delta)})`).join(', ')}.`,
+      cuantos: consensus.dissenters.length,
+    };
+  });
+  assert.ok(r.cuantos > 0, 'este sitio no tiene disidentes: la prueba no afirma nada');
+  assert.equal(r.pintado, r.esperado, 'el desglose no pinta a los disidentes que el consenso registra');
+});
+
+// --- La barra del factor: decisión de diseño ------------------------------------------------------
+// La barra codifica la APORTACIÓN, no el valor. Bajo el rótulo «De dónde sale la cifra», una barra invita a
+// comparar filas, y con el valor dibujado el orden de las barras no era el de los números: agua dulce
+// (75% → +16,4) salía casi tan larga como caza (80% → +23,2). El valor sigue a la vista, como cifra.
+test('la barra de cada factor dibuja su aportación, no su valor', async ({ page }) => {
+  await iniciarPartida(page, { semilla: SEMILLA_CON_SITIOS, ticks: TICKS_HASTA_SITIOS });
+  await pulsar(page, /^mundo$/i);
+  await page.locator('.candidate').first().click();
+
+  const pintado = await page.locator('.sheet.open .factor-row').evaluateAll((filas) => filas.map((f) => ({
+    id: f.dataset.factor,
+    ancho: f.querySelector('.factor-relleno').style.width,
+  })));
+  const verdad = await page.evaluate(async () => {
+    const { scoreSite } = await import('/src/tribe/sitescore.js');
+    const g = window.__huehuet.game;
+    const el = document.querySelector('.site-breakdown');
+    const s = scoreSite(g.discovery, Number(el.dataset.x), Number(el.dataset.y), { season: g.clock.season });
+    return s.factors.map((f) => ({ id: f.id, value: f.value, contribution: f.contribution }));
+  });
+
+  const mayor = verdad.reduce((a, f) => Math.max(a, Math.abs(f.contribution)), 0);
+  assert.ok(mayor > 0, 'ningún factor aporta nada: la prueba no afirma nada');
+  assert.equal(pintado.length, verdad.length);
+  for (const [i, f] of verdad.entries()) {
+    assert.equal(pintado[i].id, f.id, `la fila ${i} no es ${f.id}`);
+    assert.equal(pintado[i].ancho, `${Math.round(Math.min(1, Math.abs(f.contribution) / mayor) * 100)}%`,
+      `la barra de ${f.id} no dibuja su aportación (${f.contribution.toFixed(1)} de ${mayor.toFixed(1)}) sino ${pintado[i].ancho}`);
+  }
+  // Y en este sitio los dos órdenes no coinciden: si coincidieran, la prueba no distinguiría las dos lecturas.
+  const porValor = [...verdad].sort((a, b) => b.value - a.value).map((f) => f.id);
+  const porAporta = [...verdad].sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution)).map((f) => f.id);
+  assert.notDeepEqual(porValor, porAporta, 'aquí el orden por valor y el orden por aportación coinciden');
+  // La barra más larga es la del factor que más aporta, y es el que el desglose llama decisivo.
+  assert.equal(pintado[verdad.findIndex((f) => f.id === porAporta[0])].ancho, '100%',
+    'la barra del factor que más aporta no está llena');
+});
+
+// --- Un sitio inviable lo dice -------------------------------------------------------------------
+
+test('un sitio sin agua dulce avisa de que no se puede vivir en él', async ({ page }) => {
+  await iniciarPartida(page, { semilla: SEMILLA_CON_SITIOS, ticks: TICKS_HASTA_SITIOS });
+  const r = await page.evaluate(async () => {
+    const { scoreSite } = await import('/src/tribe/sitescore.js');
+    const { renderSiteBreakdown, decisionDeSitio } = await import('/src/ui/panels.js');
+    const g = window.__huehuet.game;
+    // La primera celda conocida sin agua dulce a la vista: el sitio existe, pero no es habitable.
+    let malo = null;
+    for (const c of g.discovery.knownCells()) {
+      const s = scoreSite(g.discovery, c.x, c.y, { season: g.clock.season });
+      if (!s.viable) { malo = s; break; }
+    }
+    if (!malo) return { viable: true };
+    const nodo = renderSiteBreakdown(malo, decisionDeSitio(g, malo));
+    return {
+      viable: malo.viable,
+      aviso: nodo.querySelector('.site-inviable')?.textContent ?? null,
+      veredicto: nodo.querySelector('.site-veredicto').textContent,
+    };
+  });
+  assert.equal(r.viable, false, 'no hay ninguna celda conocida inviable: la prueba no afirma nada');
+  assert.ok(r.aviso, 'el desglose de un sitio inviable no avisa de que no se puede vivir ahí');
+  assert.match(r.aviso, /agua dulce/i, `el aviso no dice por qué no es habitable: «${r.aviso}»`);
+  assert.equal(r.veredicto, 'Aquí no se puede vivir.', 'el veredicto de un sitio inviable no lo dice');
+});
+
+// --- La lista de candidatos ----------------------------------------------------------------------
+
+test('la lista de candidatos pinta la puntuación de cada sitio', async ({ page }) => {
+  await iniciarPartida(page, { semilla: SEMILLA_CON_SITIOS, ticks: TICKS_HASTA_SITIOS });
+  await pulsar(page, /^mundo$/i);
+  const pintado = await page.locator('.candidate').evaluateAll((bs) => bs.map((b) => ({
+    x: Number(b.dataset.x), y: Number(b.dataset.y),
+    total: b.querySelector('.cand-total').textContent,
+    lugar: b.querySelector('.cand-lugar').textContent,
+  })));
+  const verdad = await page.evaluate(async () => {
+    const { candidateSites } = await import('/src/tribe/sitescore.js');
+    const g = window.__huehuet.game;
+    return candidateSites(g.discovery, { season: g.clock.season }).map((s) => ({ x: s.x, y: s.y, total: s.total }));
+  });
+  assert.ok(verdad.length > 0, 'la banda no considera ningún sitio: la prueba no afirma nada');
+  assert.equal(pintado.length, verdad.length, `${pintado.length} candidatos pintados para ${verdad.length} del modelo`);
+  for (const [i, s] of verdad.entries()) {
+    assert.equal(pintado[i].x, s.x, `el candidato ${i} no está en x=${s.x}`);
+    assert.equal(pintado[i].y, s.y, `el candidato ${i} no está en y=${s.y}`);
+    assert.equal(pintado[i].lugar, `(${s.x}, ${s.y})`, `el candidato ${i} no dice dónde está`);
+    assert.equal(pintado[i].total, String(Math.round(s.total)),
+      `la puntuación de (${s.x}, ${s.y}) debería ser ${Math.round(s.total)} y pone ${pintado[i].total}`);
+  }
 });
 
 // --- Geometría en el teléfono --------------------------------------------------------------------
@@ -361,4 +627,142 @@ test('guardar desde la hoja de Mundo escribe la partida en el slot', async ({ pa
   assert.ok(guardado, 'no se escribió la clave de la partida');
   const dia = await page.evaluate(() => JSON.parse(localStorage.getItem('huehuet.saves.v1')).slots[0].day);
   assert.equal(dia, await diaActual(page), 'el índice no quedó con el día de la partida guardada');
+});
+
+// --- La franja superior: lo que obliga a reaccionar ----------------------------------------------
+
+// El contador de población es, en un juego de observador puro, uno de los pocos números que obligan a
+// reaccionar. Basta matar a alguien en el estado ya cargado y repintar: no hace falta sembrar nada.
+test('la franja cuenta a los vivos, no a los que hubo', async ({ page }) => {
+  await iniciarPartida(page);
+  const antes = await texto(page, '.hud-poblacion');
+  const total = await page.evaluate(() => window.__huehuet.game.band.npcs.length);
+  await page.evaluate(() => {
+    const g = window.__huehuet.game;
+    g.band.npcs.find((n) => n.alive).alive = false;
+    window.__huehuet.refrescar();
+  });
+  const despues = await texto(page, '.hud-poblacion');
+  assert.notEqual(despues, antes, 'morir alguien no bajó el contador');
+  const vivos = await page.evaluate(async () => {
+    const { livingNpcs } = await import('/src/tribe/band.js');
+    return livingNpcs(window.__huehuet.game.band).length;
+  });
+  assert.equal(vivos, total - 1, 'debería quedar uno menos vivo que habitantes hubo');
+  assert.equal(despues, `${vivos} habitantes`, `la franja dice «${despues}» con ${vivos} vivos de ${total}`);
+});
+
+test('la franja dice la hora de la simulación, no una hora congelada', async ({ page }) => {
+  await iniciarPartida(page, { semilla: SEMILLA_CON_SITIOS, ticks: TICKS_HASTA_SITIOS });
+  const hora = await page.evaluate(() => window.__huehuet.game.clock.hour);
+  assert.notEqual(hora, 0, 'a estas alturas el reloj no debería estar en la hora 0: la prueba no afirma nada');
+  assert.equal(await texto(page, '.hud-hora'), `${String(hora).padStart(2, '0')}:00`);
+  // Y se mueve con el reloj: cinco horas más son otra hora en la franja.
+  await avanzarTicks(page, 5);
+  const despues = await page.evaluate(() => window.__huehuet.game.clock.hour);
+  assert.notEqual(despues, hora, 'cinco horas no movieron el reloj');
+  assert.equal(await texto(page, '.hud-hora'), `${String(despues).padStart(2, '0')}:00`);
+});
+
+test('la franja dice la era de la banda: asentarse se ve en ella', async ({ page }) => {
+  await iniciarPartida(page);
+  assert.equal(await page.evaluate(() => window.__huehuet.game.band.settled), false);
+  assert.equal(await texto(page, '.hud-era'), 'Nómadas', 'una banda que camina no sale como nómada');
+  await page.evaluate(() => { window.__huehuet.game.band.settled = true; window.__huehuet.refrescar(); });
+  assert.equal(await texto(page, '.hud-era'), 'Aldea', 'asentarse no cambió la era de la franja');
+});
+
+// --- La hoja: el desglose necesita la pantalla entera --------------------------------------------
+// La tabla de nueve factores con sus barras no cabe en media pantalla: abrir el desglose al 45% es, por sí
+// solo, perder la razón de ser de la pantalla.
+test('el desglose abre al 90% de la pantalla, no a media', async ({ page }) => {
+  await iniciarPartida(page, { semilla: SEMILLA_CON_SITIOS, ticks: TICKS_HASTA_SITIOS });
+  await pulsar(page, /^mundo$/i);
+  const media = await caja(page, '.sheet.open');
+  assert.ok(Math.abs((ALTO - media.y) - ALTO * 0.45) < 4,
+    `la hoja de Mundo abre a ${ALTO - media.y} px y no al 45% (${ALTO * 0.45})`);
+  assert.ok(await page.locator('.candidate').count() > 0, 'la hoja de Mundo no lista ningún sitio candidato');
+  await page.locator('.candidate').first().click();
+  assert.equal(await page.locator('.site-breakdown').count(), 1, 'pulsar un candidato no abrió su desglose');
+  const alta = await caja(page, '.sheet.open');
+  assert.ok(Math.abs((ALTO - alta.y) - ALTO * 0.9) < 4,
+    `el desglose abre a ${ALTO - alta.y} px y no al 90% (${ALTO * 0.9})`);
+  assert.equal(await page.locator('.sheet.open').getAttribute('data-snap'), '0.9',
+    'la hoja del desglose no quedó enganchada al 90%');
+});
+
+// --- La hoja de la banda -------------------------------------------------------------------------
+
+test('cada necesidad de cada NPC muestra su valor', async ({ page }) => {
+  await iniciarPartida(page, { semilla: SEMILLA_CON_SITIOS, ticks: TICKS_HASTA_SITIOS });
+  await pulsar(page, /^banda$/i);
+  const pintado = await page.locator('.sheet.open .npc-card').evaluateAll((cs) => cs.map((c) => ({
+    npc: c.dataset.npc,
+    needs: Object.fromEntries([...c.querySelectorAll('.need')].map((n) => [n.dataset.need, n.querySelector('.need-valor').textContent])),
+  })));
+  const verdad = await page.evaluate(async () => {
+    const { livingNpcs } = await import('/src/tribe/band.js');
+    const { NEEDS } = await import('/src/agents/needs.js');
+    return livingNpcs(window.__huehuet.game.band).map((n) => ({
+      id: n.id,
+      needs: Object.fromEntries(NEEDS.map((d) => [d.id, n.needs[d.id]])),
+    }));
+  });
+  assert.equal(pintado.length, verdad.length, `${pintado.length} fichas para ${verdad.length} vivos`);
+  const todos = verdad.flatMap((n) => Object.values(n.needs).map((v) => Math.round(v)));
+  assert.ok(todos.some((v) => v !== 0), 'todas las necesidades valen cero: la prueba no afirma nada');
+  assert.ok(new Set(todos).size > 1, 'todas las necesidades valen lo mismo: la prueba no distinguiría un valor fijo');
+  for (const [i, n] of verdad.entries()) {
+    assert.equal(pintado[i].npc, n.id, `la ficha ${i} no es de ${n.id}`);
+    for (const [id, v] of Object.entries(n.needs)) {
+      assert.equal(pintado[i].needs[id], String(Math.round(v)),
+        `la ${id} de ${n.id} debería ser ${Math.round(v)} y pone ${pintado[i].needs[id]}`);
+    }
+  }
+});
+
+test('la hoja de la banda distingue criaturas, adultos y consejo', async ({ page }) => {
+  await iniciarPartida(page, { semilla: SEMILLA_CON_SITIOS });
+  await pulsar(page, /^banda$/i);
+  const pintado = await page.locator('.sheet.open .npc-card').evaluateAll((cs) => cs.map((c) => ({
+    npc: c.dataset.npc, edad: c.querySelector('.npc-edad').textContent,
+  })));
+  const verdad = await page.evaluate(async () => {
+    const { livingNpcs } = await import('/src/tribe/band.js');
+    const { isElder, isAdult } = await import('/src/agents/npc.js');
+    return livingNpcs(window.__huehuet.game.band).map((n) => ({
+      id: n.id, age: n.age, etiqueta: isElder(n) ? 'consejo' : isAdult(n) ? 'adulto' : 'criatura',
+    }));
+  });
+  const etiquetas = new Set(verdad.map((n) => n.etiqueta));
+  assert.ok(etiquetas.has('consejo'), 'en la banda no hay ancianos: la prueba no afirma nada');
+  assert.ok(etiquetas.has('adulto'), 'en la banda no hay adultos que no sean del consejo');
+  assert.ok(etiquetas.has('criatura'), 'en la banda no hay criaturas: la prueba no distinguiría las edades');
+  assert.equal(pintado.length, verdad.length);
+  for (const [i, n] of verdad.entries()) {
+    assert.equal(pintado[i].npc, n.id, `la ficha ${i} no es de ${n.id}`);
+    assert.equal(pintado[i].edad, `${n.age} años · ${n.etiqueta}`,
+      `${n.id} tiene ${n.age} años y es ${n.etiqueta}, y la ficha pone «${pintado[i].edad}»`);
+  }
+});
+
+// --- La crónica ----------------------------------------------------------------------------------
+
+test('la crónica muestra las últimas entradas, no solo la última', async ({ page }) => {
+  await iniciarPartida(page, { semilla: SEMILLA_CON_SITIOS, ticks: TICKS_HASTA_SITIOS });
+  await pulsar(page, /^crónica$/i);
+  const verdad = await page.evaluate(async () => {
+    const { recent } = await import('/src/chronicle.js');
+    const { ENTRADAS_VISIBLES } = await import('/src/ui/panels.js');
+    const es = recent(window.__huehuet.game.chronicle, ENTRADAS_VISIBLES);
+    return { cuantas: es.length, visibles: ENTRADAS_VISIBLES, textos: es.map((e) => e.text), dias: es.map((e) => e.day) };
+  });
+  assert.ok(verdad.cuantas > 1, `la crónica solo tiene ${verdad.cuantas} entrada: la prueba no afirma nada`);
+  const pintado = await page.locator('.sheet.open .cronica-entrada').evaluateAll((es) => es.map((e) => ({
+    dia: e.querySelector('.cronica-dia').textContent, texto: e.querySelector('.cronica-texto').textContent,
+  })));
+  assert.equal(pintado.length, verdad.cuantas,
+    `la crónica pinta ${pintado.length} de las ${verdad.cuantas} entradas que caben en ${verdad.visibles}`);
+  assert.deepEqual(pintado.map((e) => e.texto), verdad.textos, 'la crónica no pinta las entradas que tiene');
+  assert.deepEqual(pintado.map((e) => e.dia), verdad.dias.map((d) => `Día ${d}`), 'la crónica no fecha sus entradas');
 });

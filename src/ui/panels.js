@@ -7,12 +7,10 @@ import { h, boton, conmutador } from './dom.js';
 import { NEEDS } from '../agents/needs.js';
 import { RESOURCES } from '../world/resources.js';
 import { SITE_FACTORS, acceptanceThreshold, candidateSites } from '../tribe/sitescore.js';
-import { evaluateConsensus } from '../tribe/consensus.js';
+import { evaluateConsensus, decideSettlement } from '../tribe/consensus.js';
 import { livingNpcs, bandPressure } from '../tribe/band.js';
 import { isElder, isAdult } from '../agents/npc.js';
 import { recent } from '../chronicle.js';
-
-const TICKS_POR_DIA = 24;   // los de createClock por defecto
 
 // --- Formato ------------------------------------------------------------------------------------
 // Las cantidades del modelo son fraccionarias (3.7000000000000002 de leña). En pantalla se redondean a un
@@ -125,25 +123,43 @@ function botonCandidato(s, handlers) {
 
 // --- El desglose de sitio: la pantalla que hace legible el sistema de la Task 8 ------------------
 
-// Arma la Decision de un sitio CUALQUIERA con las mismas funciones puras que usa la banda: el apremio y el
-// umbral son los de ahora (no los de la última evaluación), y el consenso es el de este sitio. `reason` es lo
-// que la banda dijo la última vez que decidió: es su voz, no una frase inventada por la interfaz.
+// Arma la Decision de un sitio CUALQUIERA con las mismas funciones puras que usa la banda: el apremio, el
+// umbral y el consenso son los de AHORA, no los de la última evaluación.
+//
+// El motivo también. Tomarlo de `game.lastDecision` lo dejaba medio fresco y medio rancio presentado como una
+// sola decisión: `considerSettlement` devuelve null entero mientras `band.site` esté fijado y la banda camine,
+// así que la última decisión llegaba a tener 131 ticks (5,5 días) y podía contradecir el veredicto en negrita
+// de su propia hoja —votos de 67 a 70 sobre un umbral de 59 y «se quedarían aquí» arriba, «aún no conoce
+// ningún lugar con agua dulce» tres líneas más abajo—. Fecharlo no lo arreglaba: en el caso que lo descubrió
+// la evaluación fue en el tick 102 y el candidato se conoció en el 108, los dos del día 4.
+//
+// Así que se le vuelve a PREGUNTAR a la banda: `decideSettlement` es pura, devuelve la Decision entera con su
+// `reason` y cuesta 2,3 ms con 837 celdas conocidas (12,5 ms con 1825), y esto corre una vez por toque, no
+// por fotograma. No hay nada que duplicar: hay que llamarla.
 export function decisionDeSitio(game, site) {
   const pressure = bandPressure(game.band, { season: game.clock.season });
   const threshold = acceptanceThreshold(pressure);
   const consensus = evaluateConsensus(game.band, site);
-  // `reasonDay` no es adorno: la última decisión puede ser de hace días y hablar de otro sitio (o de que no
-  // había ninguno). Visto junto a un sitio de 71 puntos, «aún no conocen ningún lugar» parece una mentira;
-  // con su día delante es lo que es, una frase vieja. Lo descubrió una captura, no una prueba.
-  const reasonDay = Math.floor((game.band.lastEvaluation ?? 0) / TICKS_POR_DIA);
-  return { settle: site.viable && consensus.average >= threshold, site, consensus, threshold, pressure, reason: game.lastDecision?.reason ?? '', reasonDay };
+  const vigente = decideSettlement(game.band, game.discovery, { season: game.clock.season });
+  // El motivo habla del MEJOR sitio de la banda, que puede no ser el que el jugador tocó. Si es otro hay que
+  // decirlo: «se asienta en (34, 72)» leído en la hoja de (33, 71) sería otra contradicción, ahora fresca.
+  const otroSitio = vigente.site && (vigente.site.x !== site.x || vigente.site.y !== site.y) ? vigente.site : null;
+  return { settle: site.viable && consensus.average >= threshold, site, consensus, threshold, pressure, reason: vigente.reason, otroSitio };
 }
 
-const filaFactor = (f) => h('li', { class: `factor-row${f.contribution < 0 ? ' factor-penaliza' : ''}`, dataset: { factor: f.id } },
+// La barra codifica la APORTACIÓN, no el valor, en proporción a la mayor del sitio. Bajo el rótulo «De dónde
+// sale la cifra» una barra invita a comparar filas, y con el valor dibujado el orden de las barras no era el
+// de los números: agua dulce (75% → +16,4) salía casi tan larga como caza (80% → +23,2), así que quien
+// comparaba barras obtenía un orden distinto del que manda. El valor no se pierde: sigue a la derecha, como
+// cifra, donde no invita a compararse de un vistazo.
+export const anchoBarra = (f, mayorAporta) =>
+  (mayorAporta > 0 ? Math.round(Math.min(1, Math.abs(f.contribution) / mayorAporta) * 100) : 0);
+
+const filaFactor = (f, mayorAporta) => h('li', { class: `factor-row${f.contribution < 0 ? ' factor-penaliza' : ''}`, dataset: { factor: f.id } },
   h('span', { class: 'factor-label' }, f.label),
   h('span', { class: 'factor-aporta' }, conSigno(f.contribution)),
   h('span', { class: 'factor-barra' },
-    h('i', { class: 'factor-relleno', style: `width:${Math.round(Math.min(1, f.value) * 100)}%` })),
+    h('i', { class: 'factor-relleno', style: `width:${anchoBarra(f, mayorAporta)}%` })),
   h('span', { class: 'factor-detalle' },
     'valor ', h('b', { class: 'factor-valor' }, porcentaje(f.value)),
     ' · peso ', h('b', { class: 'factor-peso' }, unDecimal(f.effectiveWeight))));
@@ -154,6 +170,7 @@ export function renderSiteBreakdown(site, decision) {
   const presion = decision?.pressure ?? 0;
   const media = consenso?.votes.length ? consenso.average : null;
   const estacional = site.factors.filter((f) => f.effectiveWeight !== f.weight);
+  const mayorAporta = site.factors.reduce((a, f) => Math.max(a, Math.abs(f.contribution)), 0);
 
   return h('div', { class: 'site-breakdown', dataset: { x: String(site.x), y: String(site.y) } },
     h('header', { class: 'site-cabecera' },
@@ -171,8 +188,8 @@ export function renderSiteBreakdown(site, decision) {
       `El apremio de la banda va al ${entero(presion * 100)}%: por eso hoy aceptarían ${entero(umbral)} puntos y no los ${entero(acceptanceThreshold(0))} que pedirían en calma.`),
 
     h('h3', { class: 'sheet-sub' }, 'De dónde sale la cifra'),
-    h('p', { class: 'sheet-nota' }, 'Cada factor aporta su valor por su peso. Los dos últimos restan.'),
-    h('ul', { class: 'factores' }, site.factors.map(filaFactor)),
+    h('p', { class: 'sheet-nota' }, 'Cada factor aporta su valor por su peso. La barra dibuja esa aportación, así que se pueden comparar entre sí. Los dos últimos restan.'),
+    h('ul', { class: 'factores' }, site.factors.map((f) => filaFactor(f, mayorAporta))),
     estacional.length > 0
       ? h('p', { class: 'sheet-nota site-estacion' }, `La estación cambia el peso de ${estacional.map((f) => f.label.toLowerCase()).join(', ')}.`)
       : null,
@@ -188,9 +205,13 @@ export function renderSiteBreakdown(site, decision) {
       ? h('p', { class: 'site-disidencia' }, `Se apartan del grupo: ${consenso.dissenters.map((d) => `${d.nombre} (${conSigno(d.delta)})`).join(', ')}.`)
       : null,
 
+    // El encabezado no es una fecha, es una relación: lo que la banda decidiría AHORA, con estas mismas
+    // cifras. Y si lo que decidiría habla de otro sitio, lo dice aquí mismo.
     decision?.reason
       ? h('div', { class: 'site-ultima' },
-        h('h3', { class: 'sheet-sub' }, `Lo último que decidieron (día ${decision.reasonDay ?? 0})`),
+        h('h3', { class: 'sheet-sub' }, decision.otroSitio
+          ? `Qué decidirían ahora (hablan de ${lugar(decision.otroSitio)}, no de este sitio)`
+          : 'Qué decidirían ahora'),
         h('p', { class: 'site-motivo' }, decision.reason))
       : null);
 }
@@ -203,6 +224,6 @@ function veredicto(site, decision, media, umbral) {
   if (!site.viable) return 'Aquí no se puede vivir.';
   if (media === null) return 'No hay quien lo juzgue.';
   return decision?.settle
-    ? `El consejo le da ${entero(media)} de ${entero(umbral)}: se quedarían aquí.`
+    ? `El consejo le da ${entero(media)} y hacen falta ${entero(umbral)}: se quedarían aquí.`
     : `El consejo le da ${entero(media)} y hacen falta ${entero(umbral)}: por ahora no.`;
 }
